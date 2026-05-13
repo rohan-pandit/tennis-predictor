@@ -413,18 +413,34 @@
     return isNaN(v) ? null : v;
   }
 
-  // Weights (must sum to 1)
-  const WEIGHTS = {
-    rank:    0.20,
+  // Base weights per CLAUDE.md (must sum to 1.00)
+  const BASE_WEIGHTS = {
+    h2h:     0.22,
+    form:    0.18,
     surface: 0.15,
-    form:    0.15,
-    bp:      0.12,
-    hold:    0.12,
-    ret:     0.10,
-    h2h:     0.08,
-    serve:   0.05,
-    ace:     0.03,
+    rank:    0.12,
+    hold:    0.10,
+    bp:      0.10,
+    ret:     0.08,
+    serve:   0.03,
+    ace:     0.02,
   };
+
+  // H2H sample size scaling: fewer meetings = lower H2H weight,
+  // unused weight redistributed proportionally to form + surface
+  function getEffectiveWeights(aH2hWins, bH2hWins) {
+    const total = (aH2hWins ?? 0) + (bH2hWins ?? 0);
+    const scale = total === 0 ? 0 : total === 1 ? 0.25 : total === 2 ? 0.50 : total === 3 ? 0.75 : 1.0;
+    const effectiveH2H = BASE_WEIGHTS.h2h * scale;
+    const redistributed = BASE_WEIGHTS.h2h - effectiveH2H;
+    const formSurfaceSum = BASE_WEIGHTS.form + BASE_WEIGHTS.surface;
+    return {
+      ...BASE_WEIGHTS,
+      h2h:     effectiveH2H,
+      form:    BASE_WEIGHTS.form    + redistributed * (BASE_WEIGHTS.form    / formSurfaceSum),
+      surface: BASE_WEIGHTS.surface + redistributed * (BASE_WEIGHTS.surface / formSurfaceSum),
+    };
+  }
 
   const STAT_LABELS = {
     rank:    'ATP/WTA Ranking',
@@ -439,17 +455,15 @@
   };
 
   function normalize(aVal, bVal, lowerIsBetter = false) {
-    // Returns [scoreA, scoreB] each in [0,1], summing to 1
-    if (aVal === null && bVal === null) return [0.5, 0.5];
-    if (aVal === null) return [0.35, 0.65];
-    if (bVal === null) return [0.65, 0.35];
+    // Null = strict 50/50 neutral (per CLAUDE.md null handling rules)
+    if (aVal === null || bVal === null) return [0.5, 0.5];
     if (aVal === bVal) return [0.5, 0.5];
     const lo = Math.min(aVal, bVal);
     const hi = Math.max(aVal, bVal);
     const range = hi - lo;
     let ratioA = (aVal - lo) / range; // 0=worst, 1=best among the two
     if (lowerIsBetter) ratioA = 1 - ratioA;
-    // Scale to [0.2, 0.8] so even a big gap doesn't read as 0/100%
+    // Scale to [0.2, 0.8] so even a large gap doesn't produce 0%/100%
     const scaled = 0.2 + ratioA * 0.6;
     return [scaled, 1 - scaled];
   }
@@ -489,6 +503,10 @@
     }
     document.getElementById('error-msg').style.display = 'none';
 
+    // Compute effective weights (H2H scaled by sample size, remainder to form + surface)
+    const h2hAWins = val('a-h2h'), h2hBWins = val('b-h2h');
+    const WEIGHTS = getEffectiveWeights(h2hAWins, h2hBWins);
+
     let totalA = 0, totalB = 0;
     const rows = [];
 
@@ -509,14 +527,15 @@
     }
 
     // H2H
-    const [hA, hB] = h2hNormalize(val('a-h2h'), val('b-h2h'));
+    const [hA, hB] = h2hNormalize(h2hAWins, h2hBWins);
     totalA += hA * WEIGHTS.h2h;
     totalB += hB * WEIGHTS.h2h;
-    const h2hAWins = val('a-h2h'), h2hBWins = val('b-h2h');
+    const h2hMeetings = (h2hAWins ?? 0) + (h2hBWins ?? 0);
+    const h2hScaleLabel = h2hMeetings < 4 ? ` (${Math.round(WEIGHTS.h2h * 100)}% wt)` : '';
     const h2hEdge = (h2hAWins !== null || h2hBWins !== null)
       ? (hA > hB ? `▲ ${aName}` : hB > hA ? `▲ ${bName}` : '—') : '—';
     rows.push({
-      label: STAT_LABELS.h2h,
+      label: STAT_LABELS.h2h + h2hScaleLabel,
       aDisp: h2hAWins !== null ? h2hAWins : '—',
       bDisp: h2hBWins !== null ? h2hBWins : '—',
       edge: h2hEdge,
