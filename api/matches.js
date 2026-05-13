@@ -66,28 +66,46 @@ module.exports = async function handler(req, res) {
     content: `The user asked: "${query.trim()}"
 Today is ${today}.
 
-You need to find today's tennis match schedule for the tournament the user is asking about.
+STEP 1 — Identify the tournament.
+The user may use informal, shortened, or alternative names. Map what they said to the real tournament name using your knowledge. Common aliases:
+- "Rome", "Rome Open", "Italian Open", "Rome Masters", "Italy" → Internazionali BNL d'Italia
+- "French Open", "Paris clay", "Paris Grand Slam" → Roland Garros
+- "Wimbledon", "the Championships", "SW19" → Wimbledon
+- "US Open", "Flushing Meadows", "New York Slam" → US Open
+- "Australian Open", "AO", "Melbourne Slam" → Australian Open
+- "Madrid", "Madrid Open", "Mutua Madrid" → Mutua Madrid Open
+- "Monte Carlo", "Monaco" → Rolex Monte-Carlo Masters
+- "Barcelona", "Conde de Godó" → Barcelona Open Banc Sabadell
+- "Miami", "Miami Open" → Miami Open
+- "Indian Wells", "BNP Paribas", "Masters 1000 desert" → BNP Paribas Open
+- "Canada", "Toronto", "Montreal", "Canadian Open" → National Bank Open
+- "Cincinnati", "Western & Southern", "Cincinnati Masters" → Western & Southern Open
+- "Halle", "Halle Open" → Terra Wortmann Open (Halle)
+- "Queen's", "Queen's Club" → cinch Championships (Queen's Club)
+Use your general tennis knowledge for any tournament not listed above.
 
+STEP 2 — Find today's matches.
 Fetch pages in this order until you have enough match data:
-1. BBC Sport tennis scores: https://www.bbc.com/sport/tennis/scores-fixtures
-2. LiveScore tennis: https://www.livescore.com/en/tennis/
-3. The official tournament website (construct the URL based on the tournament name, e.g. https://www.internazionalibnlditalia.com for Rome, https://www.rolandgarros.com for French Open, https://www.wimbledon.com for Wimbledon)
-4. WTA scores page: https://www.wtatennis.com/scores
-5. ATP scores page: https://www.atptour.com/en/scores/current
+1. BBC Sport: https://www.bbc.com/sport/tennis/scores-fixtures
+2. LiveScore: https://www.livescore.com/en/tennis/
+3. Official tournament website (e.g. https://www.internazionalibnlditalia.com for Rome, https://www.rolandgarros.com for French Open, https://www.wimbledon.com for Wimbledon)
+4. WTA scores: https://www.wtatennis.com/scores
+5. ATP scores: https://www.atptour.com/en/scores/current
 
-Once you have match data, return ONLY a valid JSON object — no markdown fences, no explanation:
+STEP 3 — Return results.
+Return ONLY a valid JSON object — no markdown fences, no explanation:
 {
-  "tournament": "exact full tournament name",
+  "tournament": "full official tournament name",
   "surface": "clay" | "grass" | "hard",
   "matches": [
     { "playerA": "First Last", "playerB": "First Last", "round": "e.g. Round of 16" }
   ]
 }
 
-Surface inference:
-- clay:  Rome/Internazionali BNL d'Italia, Roland Garros/French Open, Madrid, Barcelona, Monte Carlo, Hamburg, Geneva, Lyon
-- grass: Wimbledon, Queen's Club, Halle, Eastbourne, 's-Hertogenbosch, Birmingham, Nottingham
-- hard:  Australian Open, US Open, Miami, Indian Wells, Cincinnati, Canada, Dubai, Doha, Adelaide, Paris, Vienna, Basel`,
+Surface map:
+- clay:  Internazionali BNL d'Italia, Roland Garros, Mutua Madrid Open, Barcelona, Monte Carlo, Hamburg, Geneva, Lyon, Estoril
+- grass: Wimbledon, cinch Championships, Terra Wortmann Open, Eastbourne, 's-Hertogenbosch, Birmingham, Nottingham
+- hard:  Australian Open, US Open, Miami Open, BNP Paribas Open, National Bank Open, Western & Southern Open, Dubai, Doha, Adelaide, Paris, Vienna, Basel`,
   }];
 
   try {
