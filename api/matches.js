@@ -1,19 +1,8 @@
 const Anthropic = require('@anthropic-ai/sdk');
 
-// ── Page fetcher ───────────────────────────────────────────────────────────────
+// ── Fetchers ───────────────────────────────────────────────────────────────────
 
-async function fetchPageText(url) {
-  const res = await fetch(url, {
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-      'Accept': 'text/html,application/xhtml+xml,*/*',
-      'Accept-Language': 'en-US,en;q=0.9',
-    },
-    redirect: 'follow',
-    signal: AbortSignal.timeout(9000),
-  });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const html = await res.text();
+function stripHtml(html, maxLen = 8000) {
   return html
     .replace(/<script[\s\S]*?<\/script>/gi, '')
     .replace(/<style[\s\S]*?<\/style>/gi, '')
@@ -23,7 +12,48 @@ async function fetchPageText(url) {
     .replace(/&amp;/g, '&')
     .replace(/\s+/g, ' ')
     .trim()
-    .slice(0, 8000);
+    .slice(0, maxLen);
+}
+
+const HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  'Accept-Language': 'en-US,en;q=0.9',
+};
+
+/** DuckDuckGo lite HTML search — plain HTML, works from servers */
+async function searchDDG(q) {
+  const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}`;
+  const res = await fetch(url, {
+    headers: { ...HEADERS, Accept: 'text/html' },
+    redirect: 'follow',
+    signal: AbortSignal.timeout(9000),
+  });
+  if (!res.ok) throw new Error(`DDG HTTP ${res.status}`);
+  return stripHtml(await res.text(), 8000);
+}
+
+/** Wikipedia summary API — clean JSON, always accessible */
+async function fetchWikipedia(title) {
+  const url = `https://en.wikipedia.org/w/api.php?action=parse&page=${encodeURIComponent(title)}&prop=wikitext&format=json&origin=*`;
+  const res = await fetch(url, {
+    headers: { ...HEADERS, Accept: 'application/json' },
+    signal: AbortSignal.timeout(9000),
+  });
+  if (!res.ok) throw new Error(`Wikipedia HTTP ${res.status}`);
+  const data = await res.json();
+  const wikitext = data?.parse?.wikitext?.['*'] || '';
+  return wikitext.slice(0, 8000);
+}
+
+/** Generic page fetch (strips HTML to plain text) */
+async function fetchPageText(url) {
+  const res = await fetch(url, {
+    headers: { ...HEADERS, Accept: 'text/html,application/xhtml+xml,*/*' },
+    redirect: 'follow',
+    signal: AbortSignal.timeout(9000),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return stripHtml(await res.text(), 8000);
 }
 
 // ── Handler ────────────────────────────────────────────────────────────────────
@@ -45,55 +75,80 @@ module.exports = async function handler(req, res) {
   }
 
   const today = new Date().toISOString().split('T')[0];
+  const year  = new Date().getFullYear();
   const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-  // Claude uses fetch_page to find today's matches for the requested tournament.
-  // We give it a prioritised list of reliable plain-HTML sources to try.
-  const tools = [{
-    name: 'fetch_page',
-    description: 'Fetch the plain-text content of a web page',
-    input_schema: {
-      type: 'object',
-      properties: {
-        url: { type: 'string', description: 'Full URL to fetch' },
+  const tools = [
+    {
+      name: 'search_web',
+      description: 'Search DuckDuckGo and return plain-text search results including titles and snippets. Best first tool to try.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Search query' },
+        },
+        required: ['query'],
       },
-      required: ['url'],
     },
-  }];
+    {
+      name: 'fetch_wikipedia',
+      description: 'Fetch the wikitext of a Wikipedia article by its page title. Great for tournament draw pages.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          title: { type: 'string', description: 'Wikipedia page title, e.g. "2026 Italian Open – Men\'s Singles"' },
+        },
+        required: ['title'],
+      },
+    },
+    {
+      name: 'fetch_page',
+      description: 'Fetch the plain-text content of any web page URL.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          url: { type: 'string', description: 'Full URL to fetch' },
+        },
+        required: ['url'],
+      },
+    },
+  ];
 
   const messages = [{
     role: 'user',
     content: `The user asked: "${query.trim()}"
-Today is ${today}.
+Today is ${today} (year: ${year}).
 
 STEP 1 — Identify the tournament.
-The user may use informal, shortened, or alternative names. Map what they said to the real tournament name using your knowledge. Common aliases:
-- "Rome", "Rome Open", "Italian Open", "Rome Masters", "Italy" → Internazionali BNL d'Italia
-- "French Open", "Paris clay", "Paris Grand Slam" → Roland Garros
+Users often use informal names. Map to the official name:
+- "Rome", "Rome Open", "Italian Open", "Rome Masters" → Internazionali BNL d'Italia
+- "French Open", "Paris clay" → Roland Garros
 - "Wimbledon", "the Championships", "SW19" → Wimbledon
-- "US Open", "Flushing Meadows", "New York Slam" → US Open
-- "Australian Open", "AO", "Melbourne Slam" → Australian Open
-- "Madrid", "Madrid Open", "Mutua Madrid" → Mutua Madrid Open
+- "US Open", "Flushing Meadows" → US Open
+- "Australian Open", "AO" → Australian Open
+- "Madrid", "Madrid Open" → Mutua Madrid Open
 - "Monte Carlo", "Monaco" → Rolex Monte-Carlo Masters
-- "Barcelona", "Conde de Godó" → Barcelona Open Banc Sabadell
-- "Miami", "Miami Open" → Miami Open
-- "Indian Wells", "BNP Paribas", "Masters 1000 desert" → BNP Paribas Open
-- "Canada", "Toronto", "Montreal", "Canadian Open" → National Bank Open
-- "Cincinnati", "Western & Southern", "Cincinnati Masters" → Western & Southern Open
-- "Halle", "Halle Open" → Terra Wortmann Open (Halle)
-- "Queen's", "Queen's Club" → cinch Championships (Queen's Club)
-Use your general tennis knowledge for any tournament not listed above.
+- "Barcelona" → Barcelona Open Banc Sabadell
+- "Miami" → Miami Open
+- "Indian Wells" → BNP Paribas Open
+- "Canada", "Toronto", "Montreal" → National Bank Open
+- "Cincinnati" → Western & Southern Open
+- "Halle" → Terra Wortmann Open
+- "Queen's", "Queen's Club" → cinch Championships
+Use your tennis knowledge for any other tournament.
 
-STEP 2 — Find today's matches.
-Fetch pages in this order until you have enough match data:
-1. BBC Sport: https://www.bbc.com/sport/tennis/scores-fixtures
-2. LiveScore: https://www.livescore.com/en/tennis/
-3. Official tournament website (e.g. https://www.internazionalibnlditalia.com for Rome, https://www.rolandgarros.com for French Open, https://www.wimbledon.com for Wimbledon)
-4. WTA scores: https://www.wtatennis.com/scores
-5. ATP scores: https://www.atptour.com/en/scores/current
+STEP 2 — Find today's matches using tools (try in this order):
 
-STEP 3 — Return results.
-Return ONLY a valid JSON object — no markdown fences, no explanation:
+1. search_web with query: "[tournament name] ${year} today schedule draw results"
+   → Look for match pairings (Player A vs Player B) in the search snippets.
+
+2. If not enough detail, fetch_wikipedia with the ${year} tournament draw page title,
+   e.g. "${year} Italian Open – Men's Singles" or "${year} French Open – Women's Singles"
+   → Wikipedia draw tables list every match with player names and rounds.
+
+3. If still needed, fetch_page from the official tournament site or a reliable schedule page.
+
+STEP 3 — Return ONLY a valid JSON object (no markdown, no explanation):
 {
   "tournament": "full official tournament name",
   "surface": "clay" | "grass" | "hard",
@@ -103,7 +158,7 @@ Return ONLY a valid JSON object — no markdown fences, no explanation:
 }
 
 Surface map:
-- clay:  Internazionali BNL d'Italia, Roland Garros, Mutua Madrid Open, Barcelona, Monte Carlo, Hamburg, Geneva, Lyon, Estoril
+- clay:  Internazionali BNL d'Italia, Roland Garros, Mutua Madrid Open, Barcelona, Monte Carlo, Hamburg, Geneva, Lyon
 - grass: Wimbledon, cinch Championships, Terra Wortmann Open, Eastbourne, 's-Hertogenbosch, Birmingham, Nottingham
 - hard:  Australian Open, US Open, Miami Open, BNP Paribas Open, National Bank Open, Western & Southern Open, Dubai, Doha, Adelaide, Paris, Vienna, Basel`,
   }];
@@ -117,19 +172,27 @@ Surface map:
     });
 
     let iters = 0;
-    while (response.stop_reason === 'tool_use' && iters < 5) {
+    while (response.stop_reason === 'tool_use' && iters < 6) {
       iters++;
 
-      const toolUses = response.content.filter(b => b.type === 'tool_use');
+      const toolUses  = response.content.filter(b => b.type === 'tool_use');
       const toolResults = await Promise.all(
         toolUses.map(async (tu) => {
           let content;
           try {
-            content = await fetchPageText(tu.input.url);
-            console.log(`Fetched ${tu.input.url} — ${content.length} chars`);
+            if (tu.name === 'search_web') {
+              content = await searchDDG(tu.input.query);
+              console.log(`DDG search "${tu.input.query}" — ${content.length} chars`);
+            } else if (tu.name === 'fetch_wikipedia') {
+              content = await fetchWikipedia(tu.input.title);
+              console.log(`Wikipedia "${tu.input.title}" — ${content.length} chars`);
+            } else {
+              content = await fetchPageText(tu.input.url);
+              console.log(`Fetched ${tu.input.url} — ${content.length} chars`);
+            }
           } catch (err) {
-            content = `Error fetching ${tu.input.url}: ${err.message}`;
-            console.log(`Failed ${tu.input.url}: ${err.message}`);
+            content = `Error: ${err.message}`;
+            console.log(`Tool ${tu.name} failed: ${err.message}`);
           }
           return { type: 'tool_result', tool_use_id: tu.id, content };
         })
@@ -149,7 +212,11 @@ Surface map:
     const text = (response.content.find(b => b.type === 'text')?.text || '').trim();
     const jsonMatch = text.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
-      return res.status(500).json({ error: 'Could not find match data. Try a different tournament name or check back later.' });
+      console.log('Claude final response (no JSON found):', text.slice(0, 500));
+      return res.status(500).json({
+        error: 'Could not find match data for that tournament today. Check that the tournament is currently active and try again.',
+        debug: text.slice(0, 300),
+      });
     }
 
     return res.json(JSON.parse(jsonMatch[0]));
