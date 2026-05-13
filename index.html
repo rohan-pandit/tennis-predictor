@@ -259,6 +259,121 @@
       margin-bottom: 1rem;
       display: none;
     }
+
+    /* ── Match Finder ──────────────────────────────────────────────────── */
+    .match-finder {
+      max-width: 900px;
+      margin: 0 auto 2.5rem;
+      background: #fff;
+      border: 1.5px solid #e8e8e8;
+      border-radius: 16px;
+      padding: 1.5rem;
+    }
+    .match-finder-title {
+      font-size: 0.8rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: #999;
+      margin-bottom: 0.75rem;
+    }
+    .match-input-row {
+      display: flex;
+      gap: 0.75rem;
+    }
+    .match-input {
+      flex: 1;
+      padding: 0.65rem 1rem;
+      border: 1.5px solid #e0e0e0;
+      border-radius: 10px;
+      font-size: 0.95rem;
+      color: #1a1a1a;
+      background: #fafafa;
+      transition: border-color 0.15s;
+    }
+    .match-input:focus {
+      outline: none;
+      border-color: #1a1a1a;
+      background: #fff;
+    }
+    .find-btn {
+      padding: 0.65rem 1.5rem;
+      background: #1a1a1a;
+      color: #fff;
+      border: none;
+      border-radius: 10px;
+      font-size: 0.9rem;
+      font-weight: 600;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background 0.15s;
+    }
+    .find-btn:hover { background: #333; }
+    .find-btn:disabled { background: #aaa; cursor: not-allowed; }
+
+    .finder-status {
+      margin-top: 0.9rem;
+      font-size: 0.875rem;
+      color: #666;
+      display: none;
+    }
+    .finder-status.loading { color: #888; }
+    .finder-status.error   { color: #c0392b; }
+    .finder-status.ok      { color: #2d6a2d; }
+
+    .match-list { margin-top: 1rem; display: none; }
+    .match-list-label {
+      font-size: 0.8rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: #999;
+      margin-bottom: 0.6rem;
+    }
+    .match-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.75rem 1rem;
+      border: 1.5px solid #e8e8e8;
+      border-radius: 10px;
+      margin-bottom: 0.45rem;
+      cursor: pointer;
+      transition: all 0.15s;
+      background: #fafafa;
+    }
+    .match-item:hover { border-color: #1a1a1a; background: #fff; }
+    .match-item:active { transform: scale(0.99); }
+    .match-item.selected { border-color: #1a1a1a; background: #f5f5f5; }
+    .match-players {
+      font-size: 0.925rem;
+      font-weight: 500;
+      color: #1a1a1a;
+    }
+    .match-vs { color: #999; font-weight: 400; margin: 0 0.3rem; }
+    .match-round { font-size: 0.8rem; color: #aaa; }
+
+    .stats-progress {
+      margin-top: 0.9rem;
+      padding: 1rem 1.1rem;
+      background: #f9f9f9;
+      border-radius: 10px;
+      font-size: 0.875rem;
+      color: #555;
+      display: none;
+    }
+    .stats-progress strong { display: block; margin-bottom: 0.5rem; }
+    .step-list { list-style: none; }
+    .step-list li {
+      padding: 0.2rem 0;
+      font-size: 0.825rem;
+      color: #bbb;
+    }
+    .step-list li::before { content: '○  '; }
+    .step-list li.active { color: #555; font-weight: 500; }
+    .step-list li.active::before { content: '⏳ '; }
+    .step-list li.done { color: #2d6a2d; }
+    .step-list li.done::before { content: '✓  '; }
   </style>
 </head>
 <body>
@@ -267,6 +382,37 @@
   <h1>Tennis Match Predictor</h1>
   <p>Enter stats for both players to estimate who has the edge.</p>
 </header>
+
+<!-- Match Finder -->
+<div class="match-finder">
+  <div class="match-finder-title">Find Today's Matches</div>
+  <div class="match-input-row">
+    <input
+      id="match-query"
+      class="match-input"
+      type="text"
+      placeholder="e.g. What matches are going on today at Roland Garros?"
+    />
+    <button id="find-btn" class="find-btn" onclick="findMatches()">Find Matches</button>
+  </div>
+
+  <div id="finder-status" class="finder-status"></div>
+
+  <div id="match-list" class="match-list">
+    <div id="match-list-label" class="match-list-label"></div>
+    <div id="match-items"></div>
+  </div>
+
+  <div id="stats-progress" class="stats-progress">
+    <strong>Fetching player stats…</strong>
+    <ul class="step-list" id="step-list">
+      <li id="step-0">Looking up rankings &amp; recent form</li>
+      <li id="step-1">Fetching surface win rates &amp; service stats</li>
+      <li id="step-2">Checking head-to-head record</li>
+      <li id="step-3">Pre-filling prediction form</li>
+    </ul>
+  </div>
+</div>
 
 <!-- Pre-fill banner -->
 <div id="prefill-banner" style="display:none;max-width:900px;margin:-1rem auto 1.5rem;background:#f0faf0;border:1.5px solid #c3e6c3;border-radius:10px;padding:0.75rem 1.25rem;font-size:0.875rem;color:#2d6a2d;text-align:center;">
@@ -578,6 +724,184 @@
     const resultEl = document.getElementById('result');
     resultEl.style.display = 'block';
     resultEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // Match Finder
+  // ──────────────────────────────────────────────────────────────────────────
+
+  // Allow Enter key to trigger search
+  document.getElementById('match-query').addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') findMatches();
+  });
+
+  function setStatus(msg, cls) {
+    const el = document.getElementById('finder-status');
+    el.textContent = msg;
+    el.className = 'finder-status ' + (cls || '');
+    el.style.display = msg ? 'block' : 'none';
+  }
+
+  function setStep(n, state) {
+    const el = document.getElementById('step-' + n);
+    if (el) el.className = state;
+  }
+
+  async function findMatches() {
+    const input   = document.getElementById('match-query');
+    const query   = input.value.trim();
+    if (!query) return;
+
+    const btn     = document.getElementById('find-btn');
+    const listEl  = document.getElementById('match-list');
+    const progEl  = document.getElementById('stats-progress');
+
+    btn.disabled  = true;
+    listEl.style.display  = 'none';
+    progEl.style.display  = 'none';
+    setStatus('⏳  Searching for matches…', 'loading');
+
+    try {
+      const res  = await fetch('/api/matches', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ query }),
+      });
+      const data = await res.json();
+
+      if (data.error) { setStatus('❌  ' + data.error, 'error'); return; }
+
+      const matches = data.matches || [];
+      if (matches.length === 0) {
+        setStatus('😕  No matches found for that tournament today. Try a different tournament name.', '');
+        return;
+      }
+
+      setStatus('', '');
+      document.getElementById('match-list-label').textContent =
+        (data.tournament || 'Matches') + (data.surface ? '  ·  ' + data.surface.charAt(0).toUpperCase() + data.surface.slice(1) : '');
+
+      document.getElementById('match-items').innerHTML = matches.map((m, i) => `
+        <div class="match-item" data-index="${i}"
+             onclick="selectMatch(${i},
+               ${JSON.stringify(m.playerA)},
+               ${JSON.stringify(m.playerB)},
+               ${JSON.stringify(data.surface || 'hard')},
+               ${JSON.stringify(data.tournament || '')})">
+          <div class="match-players">
+            ${escH(m.playerA)}<span class="match-vs">vs</span>${escH(m.playerB)}
+          </div>
+          <div class="match-round">${escH(m.round || '')}</div>
+        </div>
+      `).join('');
+
+      listEl.style.display = 'block';
+
+    } catch (err) {
+      setStatus('❌  ' + err.message, 'error');
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  /** Escape HTML special chars for safe insertion into HTML */
+  function escH(str) {
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  async function selectMatch(index, playerA, playerB, surface, tournament) {
+    // Highlight selected row
+    document.querySelectorAll('.match-item').forEach((el, i) => {
+      el.classList.toggle('selected', i === index);
+    });
+
+    const progEl = document.getElementById('stats-progress');
+    progEl.style.display = 'block';
+    // Reset all steps
+    [0, 1, 2, 3].forEach(n => setStep(n, ''));
+
+    setStep(0, 'active');
+    setStep(1, 'active');
+    setStep(2, 'active');
+    setStatus('', '');
+
+    try {
+      const res   = await fetch('/api/stats', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ playerA, playerB, surface, tournament }),
+      });
+      const stats = await res.json();
+
+      if (stats.error) {
+        progEl.innerHTML = '<p style="color:#c0392b">❌ ' + escH(stats.error) + '</p>';
+        return;
+      }
+
+      [0, 1, 2].forEach(n => setStep(n, 'done'));
+      setStep(3, 'active');
+
+      // ── Pre-fill the form ────────────────────────────────────────────
+      const pa = stats.playerA || {};
+      const pb = stats.playerB || {};
+      const h2h = stats.h2h   || {};
+
+      // Surface radio
+      const radio = document.querySelector(`input[name="surface"][value="${surface}"]`);
+      if (radio) radio.checked = true;
+
+      // Names
+      document.getElementById('a-name').value = playerA;
+      document.getElementById('b-name').value = playerB;
+
+      // Helper: set input only if value is not null/undefined
+      function fill(id, val) {
+        if (val !== null && val !== undefined) document.getElementById(id).value = val;
+      }
+
+      fill('a-rank',    pa.rank);
+      fill('a-surface', pa.surface);
+      fill('a-form',    pa.form);
+      fill('a-bp',      pa.bp);
+      fill('a-hold',    pa.hold);
+      fill('a-return',  pa.ret);
+      fill('a-serve',   pa.serve);
+      fill('a-ace',     pa.ace);
+
+      fill('b-rank',    pb.rank);
+      fill('b-surface', pb.surface);
+      fill('b-form',    pb.form);
+      fill('b-bp',      pb.bp);
+      fill('b-hold',    pb.hold);
+      fill('b-return',  pb.ret);
+      fill('b-serve',   pb.serve);
+      fill('b-ace',     pb.ace);
+
+      fill('a-h2h', h2h.aWins);
+      fill('b-h2h', h2h.bWins);
+
+      updateLabels();
+
+      setStep(3, 'done');
+      progEl.innerHTML = `
+        <p style="color:#2d6a2d;font-weight:500">✅ Stats loaded!</p>
+        ${stats.note ? '<p style="color:#888;font-size:0.8rem;margin-top:0.3rem">' + escH(stats.note) + '</p>' : ''}
+        <p style="margin-top:0.5rem;font-size:0.875rem;color:#555">Review the form below and click <strong>Predict Winner</strong>.</p>
+      `;
+
+      // Show pre-fill banner and scroll to form
+      document.getElementById('prefill-banner').style.display = 'block';
+      setTimeout(() => {
+        document.querySelector('.surface-picker').scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }, 400);
+
+    } catch (err) {
+      progEl.innerHTML = '<p style="color:#c0392b">❌ ' + escH(err.message) + '</p>';
+    }
   }
 </script>
 

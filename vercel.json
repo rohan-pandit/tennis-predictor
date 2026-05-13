@@ -1,0 +1,10 @@
+{
+  "functions": {
+    "api/matches.js": {
+      "maxDuration": 30
+    },
+    "api/stats.js": {
+      "maxDuration": 60
+    }
+  }
+}
