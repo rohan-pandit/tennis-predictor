@@ -2,7 +2,7 @@ const Anthropic = require('@anthropic-ai/sdk');
 
 // ── Fetchers ───────────────────────────────────────────────────────────────────
 
-function stripHtml(html, maxLen = 8000) {
+function stripHtml(html, maxLen = 7000) {
   return html
     .replace(/<script[\s\S]*?<\/script>/gi, '')
     .replace(/<style[\s\S]*?<\/style>/gi, '')
@@ -20,7 +20,6 @@ const HEADERS = {
   'Accept-Language': 'en-US,en;q=0.9',
 };
 
-/** DuckDuckGo lite HTML search — plain HTML, works from servers */
 async function searchDDG(q) {
   const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}`;
   const res = await fetch(url, {
@@ -29,10 +28,11 @@ async function searchDDG(q) {
     signal: AbortSignal.timeout(9000),
   });
   if (!res.ok) throw new Error(`DDG HTTP ${res.status}`);
-  return stripHtml(await res.text(), 8000);
+  const text = stripHtml(await res.text(), 7000);
+  if (text.length < 50) throw new Error('DDG returned empty content');
+  return text;
 }
 
-/** Wikipedia summary API — clean JSON, always accessible */
 async function fetchWikipedia(title) {
   const url = `https://en.wikipedia.org/w/api.php?action=parse&page=${encodeURIComponent(title)}&prop=wikitext&format=json&origin=*`;
   const res = await fetch(url, {
@@ -41,19 +41,8 @@ async function fetchWikipedia(title) {
   });
   if (!res.ok) throw new Error(`Wikipedia HTTP ${res.status}`);
   const data = await res.json();
-  const wikitext = data?.parse?.wikitext?.['*'] || '';
-  return wikitext.slice(0, 8000);
-}
-
-/** Generic page fetch (strips HTML to plain text) */
-async function fetchPageText(url) {
-  const res = await fetch(url, {
-    headers: { ...HEADERS, Accept: 'text/html,application/xhtml+xml,*/*' },
-    redirect: 'follow',
-    signal: AbortSignal.timeout(9000),
-  });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return stripHtml(await res.text(), 8000);
+  if (data.error) throw new Error(`Wikipedia: ${data.error.info}`);
+  return (data?.parse?.wikitext?.['*'] || '').slice(0, 7000);
 }
 
 // ── Handler ────────────────────────────────────────────────────────────────────
@@ -69,160 +58,88 @@ module.exports = async function handler(req, res) {
   if (!query?.trim()) return res.status(400).json({ error: 'query is required' });
 
   if (!process.env.ANTHROPIC_API_KEY) {
-    return res.status(500).json({
-      error: 'Server is not configured — add ANTHROPIC_API_KEY in Vercel environment variables.',
-    });
+    return res.status(500).json({ error: 'Server not configured — add ANTHROPIC_API_KEY in Vercel.' });
   }
 
   const today = new Date().toISOString().split('T')[0];
   const year  = new Date().getFullYear();
   const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-  const tools = [
-    {
-      name: 'search_web',
-      description: 'Search DuckDuckGo and return plain-text search results including titles and snippets. Best first tool to try.',
-      input_schema: {
-        type: 'object',
-        properties: {
-          query: { type: 'string', description: 'Search query' },
-        },
-        required: ['query'],
-      },
-    },
-    {
-      name: 'fetch_wikipedia',
-      description: 'Fetch the wikitext of a Wikipedia article by its page title. Great for tournament draw pages.',
-      input_schema: {
-        type: 'object',
-        properties: {
-          title: { type: 'string', description: 'Wikipedia page title, e.g. "2026 Italian Open – Men\'s Singles"' },
-        },
-        required: ['title'],
-      },
-    },
-    {
-      name: 'fetch_page',
-      description: 'Fetch the plain-text content of any web page URL.',
-      input_schema: {
-        type: 'object',
-        properties: {
-          url: { type: 'string', description: 'Full URL to fetch' },
-        },
-        required: ['url'],
-      },
-    },
-  ];
+  // ── Step 1: Identify the official tournament name (fast, no tools) ───────────
+  const nameRes = await client.messages.create({
+    model: 'claude-opus-4-7',
+    max_tokens: 60,
+    messages: [{
+      role: 'user',
+      content: `The user asked: "${query.trim()}"\n\nWhat is the full official name of the tennis tournament they are referring to? Reply with ONLY the tournament name, nothing else. Examples: "Internazionali BNL d'Italia", "Roland Garros", "Wimbledon".`,
+    }],
+  });
+  const tournamentName = (nameRes.content[0]?.text || query).trim().replace(/['"]/g, '');
+  console.log(`Tournament identified: ${tournamentName}`);
 
-  const messages = [{
-    role: 'user',
-    content: `The user asked: "${query.trim()}"
-Today is ${today} (year: ${year}).
+  // ── Step 2: Pre-fetch sources in parallel (we control what's fetched) ────────
+  const searchQuery = `${tournamentName} ${year} today matches schedule draw results`;
 
-STEP 1 — Identify the tournament.
-Users often use informal names. Map to the official name:
-- "Rome", "Rome Open", "Italian Open", "Rome Masters" → Internazionali BNL d'Italia
-- "French Open", "Paris clay" → Roland Garros
-- "Wimbledon", "the Championships", "SW19" → Wimbledon
-- "US Open", "Flushing Meadows" → US Open
-- "Australian Open", "AO" → Australian Open
-- "Madrid", "Madrid Open" → Mutua Madrid Open
-- "Monte Carlo", "Monaco" → Rolex Monte-Carlo Masters
-- "Barcelona" → Barcelona Open Banc Sabadell
-- "Miami" → Miami Open
-- "Indian Wells" → BNP Paribas Open
-- "Canada", "Toronto", "Montreal" → National Bank Open
-- "Cincinnati" → Western & Southern Open
-- "Halle" → Terra Wortmann Open
-- "Queen's", "Queen's Club" → cinch Championships
-Use your tennis knowledge for any other tournament.
+  const [ddgResult, wikiMensResult, wikiWomensResult] = await Promise.allSettled([
+    searchDDG(searchQuery),
+    fetchWikipedia(`${year} ${tournamentName} – Men's singles`),
+    fetchWikipedia(`${year} ${tournamentName} – Women's singles`),
+  ]);
 
-STEP 2 — Find today's matches using tools (try in this order):
+  const ddgText      = ddgResult.status      === 'fulfilled' ? ddgResult.value      : `[DDG failed: ${ddgResult.reason?.message}]`;
+  const wikiMens     = wikiMensResult.status  === 'fulfilled' ? wikiMensResult.value  : `[Wikipedia men's failed: ${wikiMensResult.reason?.message}]`;
+  const wikiWomens   = wikiWomensResult.status === 'fulfilled' ? wikiWomensResult.value : `[Wikipedia women's failed: ${wikiWomensResult.reason?.message}]`;
 
-1. search_web with query: "[tournament name] ${year} today schedule draw results"
-   → Look for match pairings (Player A vs Player B) in the search snippets.
+  console.log(`DDG: ${ddgText.length}c | WikiMens: ${wikiMens.length}c | WikiWomens: ${wikiWomens.length}c`);
 
-2. If not enough detail, fetch_wikipedia with the ${year} tournament draw page title,
-   e.g. "${year} Italian Open – Men's Singles" or "${year} French Open – Women's Singles"
-   → Wikipedia draw tables list every match with player names and rounds.
+  // ── Step 3: Extract matches from the pre-fetched data (no tool loop) ─────────
+  const extractRes = await client.messages.create({
+    model: 'claude-opus-4-7',
+    max_tokens: 2048,
+    messages: [{
+      role: 'user',
+      content: `Tournament: ${tournamentName}
+Today: ${today} (${year})
 
-3. If still needed, fetch_page from the official tournament site or a reliable schedule page.
+Data from sources:
 
-STEP 3 — Return ONLY a valid JSON object (no markdown, no explanation):
+=== WEB SEARCH RESULTS ===
+${ddgText}
+
+=== WIKIPEDIA — MEN'S DRAW ===
+${wikiMens}
+
+=== WIKIPEDIA — WOMEN'S DRAW ===
+${wikiWomens}
+
+From the data above, find the matches scheduled or played on ${today}, or if the exact date is unclear, the matches in the current round of the tournament.
+
+Return ONLY valid JSON — no markdown, no explanation:
 {
-  "tournament": "full official tournament name",
+  "tournament": "${tournamentName}",
   "surface": "clay" | "grass" | "hard",
   "matches": [
-    { "playerA": "First Last", "playerB": "First Last", "round": "e.g. Round of 16" }
+    { "playerA": "First Last", "playerB": "First Last", "round": "Round name" }
   ]
 }
 
-Surface map:
+Surface map (use to set "surface"):
 - clay:  Internazionali BNL d'Italia, Roland Garros, Mutua Madrid Open, Barcelona, Monte Carlo, Hamburg, Geneva, Lyon
 - grass: Wimbledon, cinch Championships, Terra Wortmann Open, Eastbourne, 's-Hertogenbosch, Birmingham, Nottingham
 - hard:  Australian Open, US Open, Miami Open, BNP Paribas Open, National Bank Open, Western & Southern Open, Dubai, Doha, Adelaide, Paris, Vienna, Basel`,
-  }];
+    }],
+  });
 
-  try {
-    let response = await client.messages.create({
-      model: 'claude-opus-4-7',
-      max_tokens: 4096,
-      tools,
-      messages,
+  const text = (extractRes.content[0]?.text || '').trim();
+  const jsonMatch = text.match(/\{[\s\S]*\}/);
+
+  if (!jsonMatch) {
+    console.log('Extract step — no JSON found. Claude said:', text.slice(0, 400));
+    return res.status(500).json({
+      error: 'Could not find match data. The tournament may not be currently active, or try a slightly different tournament name.',
+      debug: text.slice(0, 300),
     });
-
-    let iters = 0;
-    while (response.stop_reason === 'tool_use' && iters < 6) {
-      iters++;
-
-      const toolUses  = response.content.filter(b => b.type === 'tool_use');
-      const toolResults = await Promise.all(
-        toolUses.map(async (tu) => {
-          let content;
-          try {
-            if (tu.name === 'search_web') {
-              content = await searchDDG(tu.input.query);
-              console.log(`DDG search "${tu.input.query}" — ${content.length} chars`);
-            } else if (tu.name === 'fetch_wikipedia') {
-              content = await fetchWikipedia(tu.input.title);
-              console.log(`Wikipedia "${tu.input.title}" — ${content.length} chars`);
-            } else {
-              content = await fetchPageText(tu.input.url);
-              console.log(`Fetched ${tu.input.url} — ${content.length} chars`);
-            }
-          } catch (err) {
-            content = `Error: ${err.message}`;
-            console.log(`Tool ${tu.name} failed: ${err.message}`);
-          }
-          return { type: 'tool_result', tool_use_id: tu.id, content };
-        })
-      );
-
-      messages.push({ role: 'assistant', content: response.content });
-      messages.push({ role: 'user', content: toolResults });
-
-      response = await client.messages.create({
-        model: 'claude-opus-4-7',
-        max_tokens: 4096,
-        tools,
-        messages,
-      });
-    }
-
-    const text = (response.content.find(b => b.type === 'text')?.text || '').trim();
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      console.log('Claude final response (no JSON found):', text.slice(0, 500));
-      return res.status(500).json({
-        error: 'Could not find match data for that tournament today. Check that the tournament is currently active and try again.',
-        debug: text.slice(0, 300),
-      });
-    }
-
-    return res.json(JSON.parse(jsonMatch[0]));
-
-  } catch (err) {
-    console.error('matches error:', err);
-    return res.status(500).json({ error: err.message || 'Internal server error' });
   }
+
+  return res.json(JSON.parse(jsonMatch[0]));
 };
