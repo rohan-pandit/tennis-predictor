@@ -268,6 +268,11 @@
   <p>Enter stats for both players to estimate who has the edge.</p>
 </header>
 
+<!-- Pre-fill banner -->
+<div id="prefill-banner" style="display:none;max-width:900px;margin:-1rem auto 1.5rem;background:#f0faf0;border:1.5px solid #c3e6c3;border-radius:10px;padding:0.75rem 1.25rem;font-size:0.875rem;color:#2d6a2d;text-align:center;">
+  ✅ Form pre-filled from match data — review stats and hit <strong>Predict Winner</strong>.
+</div>
+
 <!-- Surface -->
 <div class="surface-picker">
   <label><input type="radio" name="surface" value="hard" checked /><span class="surface-btn">Hard</span></label>
@@ -354,6 +359,42 @@
 </div>
 
 <script>
+  // URL parameter map: ?aName=...&bName=...&surface=clay&aRank=1&bRank=6 etc.
+  const PARAM_MAP = {
+    aName: 'a-name', bName: 'b-name',
+    aRank: 'a-rank', bRank: 'b-rank',
+    aSurface: 'a-surface', bSurface: 'b-surface',
+    aForm: 'a-form', bForm: 'b-form',
+    aBp: 'a-bp', bBp: 'b-bp',
+    aAce: 'a-ace', bAce: 'b-ace',
+    aReturn: 'a-return', bReturn: 'b-return',
+    aHold: 'a-hold', bHold: 'b-hold',
+    aServe: 'a-serve', bServe: 'b-serve',
+    aH2h: 'a-h2h', bH2h: 'b-h2h',
+  };
+
+  function loadFromURL() {
+    const params = new URLSearchParams(window.location.search);
+    for (const [param, id] of Object.entries(PARAM_MAP)) {
+      if (params.has(param)) {
+        document.getElementById(id).value = params.get(param);
+      }
+    }
+    // Surface radio
+    if (params.has('surface')) {
+      const s = params.get('surface').toLowerCase();
+      const radio = document.querySelector(`input[name="surface"][value="${s}"]`);
+      if (radio) radio.checked = true;
+    }
+    // Update H2H labels after names are loaded
+    updateLabels();
+    // If any data was pre-filled, show a banner
+    if ([...params.keys()].length > 0) {
+      const banner = document.getElementById('prefill-banner');
+      if (banner) banner.style.display = 'block';
+    }
+  }
+
   // Update H2H labels when names are typed
   document.getElementById('a-name').addEventListener('input', updateLabels);
   document.getElementById('b-name').addEventListener('input', updateLabels);
@@ -363,6 +404,9 @@
     document.getElementById('h2h-a-label').textContent = `${a} wins vs ${b}`;
     document.getElementById('h2h-b-label').textContent = `${b} wins vs ${a}`;
   }
+
+  // Run on page load
+  window.addEventListener('DOMContentLoaded', loadFromURL);
 
   function val(id) {
     const v = parseFloat(document.getElementById(id).value);
@@ -436,8 +480,10 @@
       ace:     [val('a-ace'),     val('b-ace'),     false],
     };
 
-    // Require at least ranking for both
-    if (stats.rank[0] === null && stats.rank[1] === null) {
+    // Check at least one stat is filled for each player
+    const aHasData = Object.values(stats).some(([a]) => a !== null) || val('a-h2h') !== null;
+    const bHasData = Object.values(stats).some(([,b]) => b !== null) || val('b-h2h') !== null;
+    if (!aHasData || !bHasData) {
       document.getElementById('error-msg').style.display = 'block';
       return;
     }
