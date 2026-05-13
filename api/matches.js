@@ -58,8 +58,8 @@ module.exports = async function handler(req, res) {
     return res.status(503).json({ error: 'Could not fetch today\'s fixtures. Please try again.' });
   }
 
-  // Log first raw match so we can see all available fields (used to find singles/doubles filter)
-  console.log('RAW MATCH SAMPLE:', JSON.stringify(raw[0], null, 2));
+  // Log first 5 raw matches to capture both singles and doubles structures
+  console.log('RAW MATCH SAMPLES:', JSON.stringify(raw.slice(0, 5), null, 2));
 
   // Normalise to a slim structure Claude can filter easily
   const matches = raw
