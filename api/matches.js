@@ -20,6 +20,7 @@ const HEADERS = {
   'Accept-Language': 'en-US,en;q=0.9',
 };
 
+/** DuckDuckGo plain-HTML search */
 async function searchDDG(q) {
   const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}`;
   const res = await fetch(url, {
@@ -29,20 +30,45 @@ async function searchDDG(q) {
   });
   if (!res.ok) throw new Error(`DDG HTTP ${res.status}`);
   const text = stripHtml(await res.text(), 7000);
-  if (text.length < 50) throw new Error('DDG returned empty content');
+  if (text.length < 100) throw new Error(`DDG returned near-empty content (${text.length}c)`);
   return text;
 }
 
-async function fetchWikipedia(title) {
-  const url = `https://en.wikipedia.org/w/api.php?action=parse&page=${encodeURIComponent(title)}&prop=wikitext&format=json&origin=*`;
-  const res = await fetch(url, {
+/**
+ * Search Wikipedia for articles matching a query, then fetch the wikitext
+ * of the best match. Avoids guessing exact article titles.
+ */
+async function fetchWikipediaBySearch(searchQuery) {
+  // Step A: find matching article titles
+  const searchUrl = `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(searchQuery)}&srlimit=5&format=json&origin=*`;
+  const searchRes = await fetch(searchUrl, {
     headers: { ...HEADERS, Accept: 'application/json' },
     signal: AbortSignal.timeout(9000),
   });
-  if (!res.ok) throw new Error(`Wikipedia HTTP ${res.status}`);
-  const data = await res.json();
-  if (data.error) throw new Error(`Wikipedia: ${data.error.info}`);
-  return (data?.parse?.wikitext?.['*'] || '').slice(0, 7000);
+  if (!searchRes.ok) throw new Error(`Wikipedia search HTTP ${searchRes.status}`);
+  const searchData = await searchRes.json();
+  const titles = (searchData.query?.search || []).map(r => r.title);
+  if (titles.length === 0) throw new Error('Wikipedia search returned no results');
+
+  console.log(`Wikipedia search "${searchQuery}" → ${titles.join(' | ')}`);
+
+  // Step B: fetch wikitext of the first result that has useful content
+  for (const title of titles) {
+    const pageUrl = `https://en.wikipedia.org/w/api.php?action=parse&page=${encodeURIComponent(title)}&prop=wikitext&format=json&origin=*`;
+    const pageRes = await fetch(pageUrl, {
+      headers: { ...HEADERS, Accept: 'application/json' },
+      signal: AbortSignal.timeout(9000),
+    });
+    if (!pageRes.ok) continue;
+    const pageData = await pageRes.json();
+    if (pageData.error) continue;
+    const wikitext = (pageData?.parse?.wikitext?.['*'] || '').slice(0, 7000);
+    if (wikitext.length > 300) {
+      console.log(`Wikipedia fetched "${title}" — ${wikitext.length}c`);
+      return { title, content: wikitext };
+    }
+  }
+  throw new Error('No Wikipedia article had sufficient content');
 }
 
 // ── Handler ────────────────────────────────────────────────────────────────────
@@ -65,43 +91,63 @@ module.exports = async function handler(req, res) {
   const year  = new Date().getFullYear();
   const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-  // ── Step 1: Identify the official tournament name (fast, no tools) ───────────
+  // ── Step 1: Identify tournament name ────────────────────────────────────────
   const nameRes = await client.messages.create({
     model: 'claude-opus-4-7',
-    max_tokens: 60,
+    max_tokens: 80,
     messages: [{
       role: 'user',
-      content: `The user asked: "${query.trim()}"\n\nWhat is the full official name of the tennis tournament they are referring to? Reply with ONLY the tournament name, nothing else. Examples: "Internazionali BNL d'Italia", "Roland Garros", "Wimbledon".`,
+      content: `The user asked: "${query.trim()}"
+
+What is the full official name of the tennis tournament they are referring to?
+Also give the common English name used on Wikipedia (e.g. "Italian Open" not "Internazionali BNL d'Italia").
+
+Reply in this exact format (two lines, nothing else):
+OFFICIAL: <official name>
+WIKIPEDIA: <common English name>`,
     }],
   });
-  const tournamentName = (nameRes.content[0]?.text || query).trim().replace(/['"]/g, '');
-  console.log(`Tournament identified: ${tournamentName}`);
 
-  // ── Step 2: Pre-fetch sources in parallel (we control what's fetched) ────────
-  const searchQuery = `${tournamentName} ${year} today matches schedule draw results`;
+  const nameText = nameRes.content[0]?.text || '';
+  const officialMatch  = nameText.match(/OFFICIAL:\s*(.+)/i);
+  const wikipediaMatch = nameText.match(/WIKIPEDIA:\s*(.+)/i);
 
+  // Strip only leading/trailing quote characters — never apostrophes inside names
+  const strip = s => (s || '').trim().replace(/^["'`]+|["'`]+$/g, '');
+  const officialName  = strip(officialMatch?.[1]  || query);
+  const wikipediaName = strip(wikipediaMatch?.[1] || officialName);
+
+  console.log(`Official: "${officialName}" | Wikipedia: "${wikipediaName}"`);
+
+  // ── Step 2: Fetch data in parallel ──────────────────────────────────────────
   const [ddgResult, wikiMensResult, wikiWomensResult] = await Promise.allSettled([
-    searchDDG(searchQuery),
-    fetchWikipedia(`${year} ${tournamentName} – Men's singles`),
-    fetchWikipedia(`${year} ${tournamentName} – Women's singles`),
+    searchDDG(`${officialName} ${year} today matches schedule draw results`),
+    fetchWikipediaBySearch(`${year} ${wikipediaName} tennis singles`),
+    fetchWikipediaBySearch(`${year} ${wikipediaName} women's singles tennis`),
   ]);
 
-  const ddgText      = ddgResult.status      === 'fulfilled' ? ddgResult.value      : `[DDG failed: ${ddgResult.reason?.message}]`;
-  const wikiMens     = wikiMensResult.status  === 'fulfilled' ? wikiMensResult.value  : `[Wikipedia men's failed: ${wikiMensResult.reason?.message}]`;
-  const wikiWomens   = wikiWomensResult.status === 'fulfilled' ? wikiWomensResult.value : `[Wikipedia women's failed: ${wikiWomensResult.reason?.message}]`;
+  const ddgText    = ddgResult.status      === 'fulfilled'
+    ? ddgResult.value
+    : `[DDG unavailable: ${ddgResult.reason?.message}]`;
+
+  const wikiMens   = wikiMensResult.status  === 'fulfilled'
+    ? `Article: "${wikiMensResult.value.title}"\n${wikiMensResult.value.content}`
+    : `[Wikipedia men's unavailable: ${wikiMensResult.reason?.message}]`;
+
+  const wikiWomens = wikiWomensResult.status === 'fulfilled'
+    ? `Article: "${wikiWomensResult.value.title}"\n${wikiWomensResult.value.content}`
+    : `[Wikipedia women's unavailable: ${wikiWomensResult.reason?.message}]`;
 
   console.log(`DDG: ${ddgText.length}c | WikiMens: ${wikiMens.length}c | WikiWomens: ${wikiWomens.length}c`);
 
-  // ── Step 3: Extract matches from the pre-fetched data (no tool loop) ─────────
+  // ── Step 3: Extract matches ──────────────────────────────────────────────────
   const extractRes = await client.messages.create({
     model: 'claude-opus-4-7',
     max_tokens: 2048,
     messages: [{
       role: 'user',
-      content: `Tournament: ${tournamentName}
+      content: `Tournament: ${officialName}
 Today: ${today} (${year})
-
-Data from sources:
 
 === WEB SEARCH RESULTS ===
 ${ddgText}
@@ -112,18 +158,18 @@ ${wikiMens}
 === WIKIPEDIA — WOMEN'S DRAW ===
 ${wikiWomens}
 
-From the data above, find the matches scheduled or played on ${today}, or if the exact date is unclear, the matches in the current round of the tournament.
+From the data above, identify the matches scheduled for TODAY (${today}) or currently in the active round of the tournament. Include both men's and women's matches if found.
 
 Return ONLY valid JSON — no markdown, no explanation:
 {
-  "tournament": "${tournamentName}",
+  "tournament": "${officialName}",
   "surface": "clay" | "grass" | "hard",
   "matches": [
     { "playerA": "First Last", "playerB": "First Last", "round": "Round name" }
   ]
 }
 
-Surface map (use to set "surface"):
+Surface map:
 - clay:  Internazionali BNL d'Italia, Roland Garros, Mutua Madrid Open, Barcelona, Monte Carlo, Hamburg, Geneva, Lyon
 - grass: Wimbledon, cinch Championships, Terra Wortmann Open, Eastbourne, 's-Hertogenbosch, Birmingham, Nottingham
 - hard:  Australian Open, US Open, Miami Open, BNP Paribas Open, National Bank Open, Western & Southern Open, Dubai, Doha, Adelaide, Paris, Vienna, Basel`,
@@ -134,9 +180,9 @@ Surface map (use to set "surface"):
   const jsonMatch = text.match(/\{[\s\S]*\}/);
 
   if (!jsonMatch) {
-    console.log('Extract step — no JSON found. Claude said:', text.slice(0, 400));
+    console.log('No JSON in extract response:', text.slice(0, 400));
     return res.status(500).json({
-      error: 'Could not find match data. The tournament may not be currently active, or try a slightly different tournament name.',
+      error: 'Could not find match data. The tournament may not be currently active.',
       debug: text.slice(0, 300),
     });
   }
