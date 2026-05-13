@@ -58,19 +58,7 @@ module.exports = async function handler(req, res) {
     return res.status(503).json({ error: 'Could not fetch today\'s fixtures. Please try again.' });
   }
 
-  // Log one singles + one doubles raw match to identify the differentiating field
-  const singlesSample = raw.find(m => {
-    const p1 = m.player1?.fullName ?? m.player1?.name ?? '';
-    return p1 && !p1.includes('/');
-  });
-  const doublesSample = raw.find(m => {
-    const p1 = m.player1?.fullName ?? m.player1?.name ?? '';
-    return p1 && p1.includes('/');
-  });
-  console.log('SINGLES SAMPLE:', JSON.stringify(singlesSample, null, 2));
-  console.log('DOUBLES SAMPLE:', JSON.stringify(doublesSample, null, 2));
-
-  // Normalise to a slim structure Claude can filter easily
+  // Normalise to singles matches only — doubles entries have a "/" in the player name
   const matches = raw
     .map(m => ({
       playerA:    m.player1?.fullName ?? m.player1?.name ?? '',
@@ -78,7 +66,7 @@ module.exports = async function handler(req, res) {
       tournament: m.tournament?.name  ?? '',
       round:      m.round?.name       ?? (typeof m.round === 'string' ? m.round : ''),
     }))
-    .filter(m => m.playerA && m.playerB);
+    .filter(m => m.playerA && m.playerB && !m.playerA.includes('/') && !m.playerB.includes('/'));
 
   console.log(`Fetched ${matches.length} matches across ${new Set(matches.map(m => m.tournament)).size} tournaments`);
 
