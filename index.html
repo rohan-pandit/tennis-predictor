@@ -782,12 +782,13 @@
         (data.tournament || 'Matches') + (data.surface ? '  ·  ' + data.surface.charAt(0).toUpperCase() + data.surface.slice(1) : '');
 
       document.getElementById('match-items').innerHTML = matches.map((m, i) => `
-        <div class="match-item" data-index="${i}"
-             onclick="selectMatch(${i},
-               ${JSON.stringify(m.playerA)},
-               ${JSON.stringify(m.playerB)},
-               ${JSON.stringify(data.surface || 'hard')},
-               ${JSON.stringify(data.tournament || '')})">
+        <div class="match-item"
+             data-index="${i}"
+             data-player-a="${escH(m.playerA)}"
+             data-player-b="${escH(m.playerB)}"
+             data-surface="${escH(data.surface || 'hard')}"
+             data-tournament="${escH(data.tournament || '')}"
+             onclick="selectMatchFromEl(this)">
           <div class="match-players">
             ${escH(m.playerA)}<span class="match-vs">vs</span>${escH(m.playerB)}
           </div>
@@ -811,6 +812,16 @@
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;');
+  }
+
+  function selectMatchFromEl(el) {
+    selectMatch(
+      parseInt(el.dataset.index),
+      el.dataset.playerA,
+      el.dataset.playerB,
+      el.dataset.surface,
+      el.dataset.tournament
+    );
   }
 
   async function selectMatch(index, playerA, playerB, surface, tournament) {
