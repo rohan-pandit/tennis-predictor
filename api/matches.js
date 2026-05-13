@@ -1,74 +1,22 @@
 const Anthropic = require('@anthropic-ai/sdk');
 
-// ── Fetchers ───────────────────────────────────────────────────────────────────
+const RAPIDAPI_HOST = 'tennis-api-atp-wta-itf.p.rapidapi.com';
+const BASE_URL      = `https://${RAPIDAPI_HOST}`;
 
-function stripHtml(html, maxLen = 7000) {
-  return html
-    .replace(/<script[\s\S]*?<\/script>/gi, '')
-    .replace(/<style[\s\S]*?<\/style>/gi, '')
-    .replace(/<!--[\s\S]*?-->/g, '')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, maxLen);
-}
+// ── RapidAPI fetcher (same API the MCP uses) ───────────────────────────────────
 
-const HEADERS = {
-  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-  'Accept-Language': 'en-US,en;q=0.9',
-};
-
-/** DuckDuckGo plain-HTML search */
-async function searchDDG(q) {
-  const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}`;
+async function fetchFixtures(tour, date) {
+  const url = `${BASE_URL}/tennis/v2/${tour}/fixtures/${date}?include=tournament,round&pageSize=100`;
   const res = await fetch(url, {
-    headers: { ...HEADERS, Accept: 'text/html' },
-    redirect: 'follow',
-    signal: AbortSignal.timeout(9000),
+    headers: {
+      'x-rapidapi-host': RAPIDAPI_HOST,
+      'x-rapidapi-key':  process.env.RAPIDAPI_KEY,
+    },
+    signal: AbortSignal.timeout(10000),
   });
-  if (!res.ok) throw new Error(`DDG HTTP ${res.status}`);
-  const text = stripHtml(await res.text(), 7000);
-  if (text.length < 100) throw new Error(`DDG returned near-empty content (${text.length}c)`);
-  return text;
-}
-
-/**
- * Search Wikipedia for articles matching a query, then fetch the wikitext
- * of the best match. Avoids guessing exact article titles.
- */
-async function fetchWikipediaBySearch(searchQuery) {
-  // Step A: find matching article titles
-  const searchUrl = `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(searchQuery)}&srlimit=5&format=json&origin=*`;
-  const searchRes = await fetch(searchUrl, {
-    headers: { ...HEADERS, Accept: 'application/json' },
-    signal: AbortSignal.timeout(9000),
-  });
-  if (!searchRes.ok) throw new Error(`Wikipedia search HTTP ${searchRes.status}`);
-  const searchData = await searchRes.json();
-  const titles = (searchData.query?.search || []).map(r => r.title);
-  if (titles.length === 0) throw new Error('Wikipedia search returned no results');
-
-  console.log(`Wikipedia search "${searchQuery}" → ${titles.join(' | ')}`);
-
-  // Step B: fetch wikitext of the first result that has useful content
-  for (const title of titles) {
-    const pageUrl = `https://en.wikipedia.org/w/api.php?action=parse&page=${encodeURIComponent(title)}&prop=wikitext&format=json&origin=*`;
-    const pageRes = await fetch(pageUrl, {
-      headers: { ...HEADERS, Accept: 'application/json' },
-      signal: AbortSignal.timeout(9000),
-    });
-    if (!pageRes.ok) continue;
-    const pageData = await pageRes.json();
-    if (pageData.error) continue;
-    const wikitext = (pageData?.parse?.wikitext?.['*'] || '').slice(0, 7000);
-    if (wikitext.length > 300) {
-      console.log(`Wikipedia fetched "${title}" — ${wikitext.length}c`);
-      return { title, content: wikitext };
-    }
-  }
-  throw new Error('No Wikipedia article had sufficient content');
+  if (!res.ok) throw new Error(`RapidAPI ${tour} HTTP ${res.status}`);
+  const data = await res.json();
+  return Array.isArray(data) ? data : (data.data ?? data.result ?? []);
 }
 
 // ── Handler ────────────────────────────────────────────────────────────────────
@@ -84,108 +32,102 @@ module.exports = async function handler(req, res) {
   if (!query?.trim()) return res.status(400).json({ error: 'query is required' });
 
   if (!process.env.ANTHROPIC_API_KEY) {
-    return res.status(500).json({ error: 'Server not configured — add ANTHROPIC_API_KEY in Vercel.' });
+    return res.status(500).json({ error: 'Missing ANTHROPIC_API_KEY in Vercel environment variables.' });
+  }
+  if (!process.env.RAPIDAPI_KEY) {
+    return res.status(500).json({ error: 'Missing RAPIDAPI_KEY in Vercel environment variables.' });
   }
 
   const today = new Date().toISOString().split('T')[0];
-  const year  = new Date().getFullYear();
-  const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-  // ── Step 1: Identify tournament name ────────────────────────────────────────
-  const nameRes = await client.messages.create({
-    model: 'claude-opus-4-7',
-    max_tokens: 80,
-    messages: [{
-      role: 'user',
-      content: `The user asked: "${query.trim()}"
-
-What is the full official name of the tennis tournament they are referring to?
-Also give the common English name used on Wikipedia (e.g. "Italian Open" not "Internazionali BNL d'Italia").
-
-Reply in this exact format (two lines, nothing else):
-OFFICIAL: <official name>
-WIKIPEDIA: <common English name>`,
-    }],
-  });
-
-  const nameText = nameRes.content[0]?.text || '';
-  const officialMatch  = nameText.match(/OFFICIAL:\s*(.+)/i);
-  const wikipediaMatch = nameText.match(/WIKIPEDIA:\s*(.+)/i);
-
-  // Strip only leading/trailing quote characters — never apostrophes inside names
-  const strip = s => (s || '').trim().replace(/^["'`]+|["'`]+$/g, '');
-  const officialName  = strip(officialMatch?.[1]  || query);
-  const wikipediaName = strip(wikipediaMatch?.[1] || officialName);
-
-  console.log(`Official: "${officialName}" | Wikipedia: "${wikipediaName}"`);
-
-  // ── Step 2: Fetch data in parallel ──────────────────────────────────────────
-  const [ddgResult, wikiMensResult, wikiWomensResult] = await Promise.allSettled([
-    searchDDG(`${officialName} ${year} today matches schedule draw results`),
-    fetchWikipediaBySearch(`${year} ${wikipediaName} tennis singles`),
-    fetchWikipediaBySearch(`${year} ${wikipediaName} women's singles tennis`),
+  // ── Step 1: Fetch today's ATP + WTA fixtures from RapidAPI (parallel) ────────
+  const [atpResult, wtaResult] = await Promise.allSettled([
+    fetchFixtures('atp', today),
+    fetchFixtures('wta', today),
   ]);
 
-  const ddgText    = ddgResult.status      === 'fulfilled'
-    ? ddgResult.value
-    : `[DDG unavailable: ${ddgResult.reason?.message}]`;
+  const raw = [
+    ...(atpResult.status  === 'fulfilled' ? atpResult.value  : []),
+    ...(wtaResult.status  === 'fulfilled' ? wtaResult.value  : []),
+  ];
 
-  const wikiMens   = wikiMensResult.status  === 'fulfilled'
-    ? `Article: "${wikiMensResult.value.title}"\n${wikiMensResult.value.content}`
-    : `[Wikipedia men's unavailable: ${wikiMensResult.reason?.message}]`;
+  if (atpResult.status === 'rejected') console.log('ATP fetch failed:', atpResult.reason?.message);
+  if (wtaResult.status === 'rejected') console.log('WTA fetch failed:', wtaResult.reason?.message);
 
-  const wikiWomens = wikiWomensResult.status === 'fulfilled'
-    ? `Article: "${wikiWomensResult.value.title}"\n${wikiWomensResult.value.content}`
-    : `[Wikipedia women's unavailable: ${wikiWomensResult.reason?.message}]`;
+  if (raw.length === 0) {
+    return res.status(503).json({ error: 'Could not fetch today\'s fixtures. Please try again.' });
+  }
 
-  console.log(`DDG: ${ddgText.length}c | WikiMens: ${wikiMens.length}c | WikiWomens: ${wikiWomens.length}c`);
+  // Normalise to a slim structure Claude can filter easily
+  const matches = raw
+    .map(m => ({
+      playerA:    m.player1?.fullName ?? m.player1?.name ?? '',
+      playerB:    m.player2?.fullName ?? m.player2?.name ?? '',
+      tournament: m.tournament?.name  ?? '',
+      round:      m.round?.name       ?? (typeof m.round === 'string' ? m.round : ''),
+    }))
+    .filter(m => m.playerA && m.playerB);
 
-  // ── Step 3: Extract matches ──────────────────────────────────────────────────
-  const extractRes = await client.messages.create({
-    model: 'claude-opus-4-7',
-    max_tokens: 2048,
-    messages: [{
-      role: 'user',
-      content: `Tournament: ${officialName}
-Today: ${today} (${year})
+  console.log(`Fetched ${matches.length} matches across ${new Set(matches.map(m => m.tournament)).size} tournaments`);
 
-=== WEB SEARCH RESULTS ===
-${ddgText}
+  // ── Step 2: Ask Claude to filter by tournament + infer surface ─────────────
+  const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-=== WIKIPEDIA — MEN'S DRAW ===
-${wikiMens}
+  const prompt = `The user asked: "${query.trim()}"
+Today is ${today}.
 
-=== WIKIPEDIA — WOMEN'S DRAW ===
-${wikiWomens}
+Here are all tennis matches scheduled today (${matches.length} total across all tournaments):
+${JSON.stringify(matches, null, 2)}
 
-From the data above, identify the matches scheduled for TODAY (${today}) or currently in the active round of the tournament. Include both men's and women's matches if found.
+1. Identify which tournament the user is asking about. They may use an informal name:
+   - "Rome", "Rome Open", "Italian Open", "Rome Masters" → Internazionali BNL d'Italia
+   - "French Open", "Paris clay" → Roland Garros
+   - "Wimbledon", "the Championships" → Wimbledon
+   - "US Open", "Flushing Meadows" → US Open
+   - "Australian Open", "AO" → Australian Open
+   - "Madrid" → Mutua Madrid Open
+   - "Monte Carlo" → Rolex Monte-Carlo Masters
+   - "Canada", "Toronto", "Montreal" → National Bank Open
+   - "Cincinnati" → Western & Southern Open
+   - "Halle" → Terra Wortmann Open
+   - "Queen's" → cinch Championships
+   Use your tennis knowledge for any other tournament name.
+
+2. Filter the matches list to only those from that tournament.
+
+3. Infer the surface:
+   - clay:  Internazionali BNL d'Italia, Roland Garros, Mutua Madrid Open, Barcelona, Monte Carlo, Hamburg, Geneva, Lyon
+   - grass: Wimbledon, cinch Championships, Terra Wortmann Open, Eastbourne, 's-Hertogenbosch, Birmingham
+   - hard:  Australian Open, US Open, Miami Open, BNP Paribas Open, National Bank Open, Western & Southern Open, Dubai, Doha, Adelaide, Paris, Vienna, Basel
 
 Return ONLY valid JSON — no markdown, no explanation:
 {
-  "tournament": "${officialName}",
+  "tournament": "exact tournament name from the data",
   "surface": "clay" | "grass" | "hard",
   "matches": [
     { "playerA": "First Last", "playerB": "First Last", "round": "Round name" }
   ]
-}
+}`;
 
-Surface map:
-- clay:  Internazionali BNL d'Italia, Roland Garros, Mutua Madrid Open, Barcelona, Monte Carlo, Hamburg, Geneva, Lyon
-- grass: Wimbledon, cinch Championships, Terra Wortmann Open, Eastbourne, 's-Hertogenbosch, Birmingham, Nottingham
-- hard:  Australian Open, US Open, Miami Open, BNP Paribas Open, National Bank Open, Western & Southern Open, Dubai, Doha, Adelaide, Paris, Vienna, Basel`,
-    }],
-  });
-
-  const text = (extractRes.content[0]?.text || '').trim();
-  const jsonMatch = text.match(/\{[\s\S]*\}/);
-
-  if (!jsonMatch) {
-    console.log('No JSON in extract response:', text.slice(0, 400));
-    return res.status(500).json({
-      error: 'Could not find match data. The tournament may not be currently active.',
-      debug: text.slice(0, 300),
+  try {
+    const response = await client.messages.create({
+      model: 'claude-opus-4-7',
+      max_tokens: 2048,
+      messages: [{ role: 'user', content: prompt }],
     });
-  }
 
-  return res.json(JSON.parse(jsonMatch[0]));
+    const text = (response.content[0]?.text || '').trim();
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+
+    if (!jsonMatch) {
+      console.log('Claude returned no JSON:', text.slice(0, 300));
+      return res.status(500).json({ error: 'Could not parse match list.', debug: text.slice(0, 300) });
+    }
+
+    return res.json(JSON.parse(jsonMatch[0]));
+
+  } catch (err) {
+    console.error('Claude error:', err);
+    return res.status(500).json({ error: err.message });
+  }
 };
