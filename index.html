@@ -1,0 +1,520 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tennis Match Predictor</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #f9f9f9;
+      color: #1a1a1a;
+      min-height: 100vh;
+      padding: 2rem 1rem;
+    }
+
+    header {
+      text-align: center;
+      margin-bottom: 2.5rem;
+    }
+    header h1 {
+      font-size: 2rem;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+    }
+    header p {
+      margin-top: 0.4rem;
+      color: #666;
+      font-size: 0.95rem;
+    }
+
+    .surface-picker {
+      display: flex;
+      justify-content: center;
+      gap: 0.75rem;
+      margin-bottom: 2rem;
+      flex-wrap: wrap;
+    }
+    .surface-picker label {
+      cursor: pointer;
+    }
+    .surface-picker input[type="radio"] { display: none; }
+    .surface-btn {
+      padding: 0.45rem 1.2rem;
+      border: 1.5px solid #ddd;
+      border-radius: 999px;
+      font-size: 0.875rem;
+      font-weight: 500;
+      color: #555;
+      transition: all 0.15s;
+      user-select: none;
+    }
+    .surface-picker input[type="radio"]:checked + .surface-btn {
+      background: #1a1a1a;
+      color: #fff;
+      border-color: #1a1a1a;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1.5rem;
+      max-width: 900px;
+      margin: 0 auto 2rem;
+    }
+    @media (max-width: 640px) {
+      .grid { grid-template-columns: 1fr; }
+    }
+
+    .player-card {
+      background: #fff;
+      border: 1.5px solid #e8e8e8;
+      border-radius: 12px;
+      padding: 1.5rem;
+    }
+    .player-card h2 {
+      font-size: 1rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: #999;
+      margin-bottom: 1.25rem;
+    }
+
+    .field {
+      margin-bottom: 1rem;
+    }
+    .field label {
+      display: block;
+      font-size: 0.8rem;
+      font-weight: 500;
+      color: #666;
+      margin-bottom: 0.3rem;
+    }
+    .field input {
+      width: 100%;
+      padding: 0.5rem 0.75rem;
+      border: 1.5px solid #e0e0e0;
+      border-radius: 8px;
+      font-size: 0.95rem;
+      color: #1a1a1a;
+      background: #fafafa;
+      transition: border-color 0.15s;
+      -moz-appearance: textfield;
+    }
+    .field input::-webkit-outer-spin-button,
+    .field input::-webkit-inner-spin-button { -webkit-appearance: none; }
+    .field input:focus {
+      outline: none;
+      border-color: #1a1a1a;
+      background: #fff;
+    }
+
+    .h2h-row {
+      max-width: 900px;
+      margin: 0 auto 1.5rem;
+      background: #fff;
+      border: 1.5px solid #e8e8e8;
+      border-radius: 12px;
+      padding: 1.25rem 1.5rem;
+    }
+    .h2h-row h2 {
+      font-size: 0.8rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: #999;
+      margin-bottom: 1rem;
+    }
+    .h2h-fields {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+    }
+
+    .predict-btn {
+      display: block;
+      margin: 0 auto 2rem;
+      padding: 0.75rem 2.5rem;
+      background: #1a1a1a;
+      color: #fff;
+      border: none;
+      border-radius: 999px;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s, transform 0.1s;
+    }
+    .predict-btn:hover { background: #333; }
+    .predict-btn:active { transform: scale(0.97); }
+
+    #result {
+      max-width: 900px;
+      margin: 0 auto;
+      display: none;
+    }
+    .result-card {
+      background: #fff;
+      border: 1.5px solid #e8e8e8;
+      border-radius: 12px;
+      padding: 2rem;
+      text-align: center;
+    }
+    .result-label {
+      font-size: 0.8rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: #999;
+      margin-bottom: 0.5rem;
+    }
+    .result-winner {
+      font-size: 2rem;
+      font-weight: 700;
+      margin-bottom: 0.25rem;
+    }
+    .result-confidence {
+      font-size: 1rem;
+      color: #555;
+      margin-bottom: 1.75rem;
+    }
+
+    .bar-wrap {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      margin-bottom: 0.5rem;
+    }
+    .bar-name {
+      width: 130px;
+      text-align: right;
+      font-size: 0.875rem;
+      font-weight: 500;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .bar-name.right { text-align: left; }
+    .bar-track {
+      flex: 1;
+      height: 10px;
+      background: #f0f0f0;
+      border-radius: 999px;
+      overflow: hidden;
+      display: flex;
+    }
+    .bar-fill-a {
+      height: 100%;
+      background: #1a1a1a;
+      border-radius: 999px 0 0 999px;
+      transition: width 0.6s cubic-bezier(.4,0,.2,1);
+    }
+    .bar-fill-b {
+      height: 100%;
+      background: #bbb;
+      border-radius: 0 999px 999px 0;
+      transition: width 0.6s cubic-bezier(.4,0,.2,1);
+    }
+
+    .breakdown {
+      margin-top: 1.75rem;
+      border-top: 1px solid #f0f0f0;
+      padding-top: 1.25rem;
+    }
+    .breakdown h3 {
+      font-size: 0.8rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: #999;
+      margin-bottom: 1rem;
+    }
+    .breakdown-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.875rem;
+    }
+    .breakdown-table th {
+      color: #999;
+      font-weight: 500;
+      padding: 0.3rem 0.5rem;
+      text-align: center;
+    }
+    .breakdown-table th:first-child { text-align: left; }
+    .breakdown-table td {
+      padding: 0.4rem 0.5rem;
+      text-align: center;
+      border-top: 1px solid #f5f5f5;
+    }
+    .breakdown-table td:first-child { text-align: left; color: #555; }
+    .win { color: #1a1a1a; font-weight: 600; }
+    .lose { color: #bbb; }
+
+    .error-msg {
+      color: #c0392b;
+      font-size: 0.85rem;
+      text-align: center;
+      margin-bottom: 1rem;
+      display: none;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>Tennis Match Predictor</h1>
+  <p>Enter stats for both players to estimate who has the edge.</p>
+</header>
+
+<!-- Surface -->
+<div class="surface-picker">
+  <label><input type="radio" name="surface" value="hard" checked /><span class="surface-btn">Hard</span></label>
+  <label><input type="radio" name="surface" value="clay" /><span class="surface-btn">Clay</span></label>
+  <label><input type="radio" name="surface" value="grass" /><span class="surface-btn">Grass</span></label>
+</div>
+
+<!-- Player cards -->
+<div class="grid">
+  <div class="player-card">
+    <h2>Player A</h2>
+    <div class="field"><label>Name</label><input id="a-name" type="text" placeholder="e.g. Novak Djokovic" /></div>
+    <div class="field"><label>ATP/WTA Ranking</label><input id="a-rank" type="number" min="1" placeholder="e.g. 3" /></div>
+    <div class="field"><label>Surface Win Rate (%)</label><input id="a-surface" type="number" min="0" max="100" placeholder="e.g. 72" /></div>
+    <div class="field"><label>Wins in Last 10 Matches</label><input id="a-form" type="number" min="0" max="10" placeholder="e.g. 7" /></div>
+    <div class="field"><label>Break Point Conversion (%)</label><input id="a-bp" type="number" min="0" max="100" placeholder="e.g. 48" /></div>
+    <div class="field"><label>Ace Rate (aces/game)</label><input id="a-ace" type="number" min="0" placeholder="e.g. 2.1" step="0.1" /></div>
+    <div class="field"><label>Return Points Won (%)</label><input id="a-return" type="number" min="0" max="100" placeholder="e.g. 40" /></div>
+    <div class="field"><label>Hold % (service games won)</label><input id="a-hold" type="number" min="0" max="100" placeholder="e.g. 82" /></div>
+    <div class="field"><label>First Serve In (%)</label><input id="a-serve" type="number" min="0" max="100" placeholder="e.g. 65" /></div>
+  </div>
+
+  <div class="player-card">
+    <h2>Player B</h2>
+    <div class="field"><label>Name</label><input id="b-name" type="text" placeholder="e.g. Carlos Alcaraz" /></div>
+    <div class="field"><label>ATP/WTA Ranking</label><input id="b-rank" type="number" min="1" placeholder="e.g. 1" /></div>
+    <div class="field"><label>Surface Win Rate (%)</label><input id="b-surface" type="number" min="0" max="100" placeholder="e.g. 68" /></div>
+    <div class="field"><label>Wins in Last 10 Matches</label><input id="b-form" type="number" min="0" max="10" placeholder="e.g. 8" /></div>
+    <div class="field"><label>Break Point Conversion (%)</label><input id="b-bp" type="number" min="0" max="100" placeholder="e.g. 45" /></div>
+    <div class="field"><label>Ace Rate (aces/game)</label><input id="b-ace" type="number" min="0" placeholder="e.g. 1.8" step="0.1" /></div>
+    <div class="field"><label>Return Points Won (%)</label><input id="b-return" type="number" min="0" max="100" placeholder="e.g. 38" /></div>
+    <div class="field"><label>Hold % (service games won)</label><input id="b-hold" type="number" min="0" max="100" placeholder="e.g. 79" /></div>
+    <div class="field"><label>First Serve In (%)</label><input id="b-serve" type="number" min="0" max="100" placeholder="e.g. 63" /></div>
+  </div>
+</div>
+
+<!-- H2H -->
+<div class="h2h-row">
+  <h2>Head-to-Head Record</h2>
+  <div class="h2h-fields">
+    <div class="field"><label id="h2h-a-label">Player A wins vs Player B</label><input id="a-h2h" type="number" min="0" placeholder="e.g. 5" /></div>
+    <div class="field"><label id="h2h-b-label">Player B wins vs Player A</label><input id="b-h2h" type="number" min="0" placeholder="e.g. 3" /></div>
+  </div>
+</div>
+
+<p class="error-msg" id="error-msg">Please fill in at least the ranking for both players.</p>
+
+<button class="predict-btn" onclick="predict()">Predict Winner</button>
+
+<!-- Result -->
+<div id="result">
+  <div class="result-card">
+    <div class="result-label">Predicted Winner</div>
+    <div class="result-winner" id="res-winner">—</div>
+    <div class="result-confidence" id="res-conf"></div>
+
+    <div class="bar-wrap">
+      <div class="bar-name" id="bar-name-a">Player A</div>
+      <div class="bar-track">
+        <div class="bar-fill-a" id="bar-a" style="width:50%"></div>
+        <div class="bar-fill-b" id="bar-b" style="width:50%"></div>
+      </div>
+      <div class="bar-name right" id="bar-name-b">Player B</div>
+    </div>
+    <div style="display:flex;justify-content:space-between;max-width:calc(100% - 280px);margin:0 auto 0 130px;font-size:0.8rem;color:#999;">
+      <span id="pct-a">50%</span><span id="pct-b">50%</span>
+    </div>
+
+    <div class="breakdown">
+      <h3>Stat Breakdown</h3>
+      <table class="breakdown-table">
+        <thead>
+          <tr>
+            <th>Stat</th>
+            <th id="th-a">Player A</th>
+            <th>Edge</th>
+            <th id="th-b">Player B</th>
+          </tr>
+        </thead>
+        <tbody id="breakdown-body"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+  // Update H2H labels when names are typed
+  document.getElementById('a-name').addEventListener('input', updateLabels);
+  document.getElementById('b-name').addEventListener('input', updateLabels);
+  function updateLabels() {
+    const a = document.getElementById('a-name').value.trim() || 'Player A';
+    const b = document.getElementById('b-name').value.trim() || 'Player B';
+    document.getElementById('h2h-a-label').textContent = `${a} wins vs ${b}`;
+    document.getElementById('h2h-b-label').textContent = `${b} wins vs ${a}`;
+  }
+
+  function val(id) {
+    const v = parseFloat(document.getElementById(id).value);
+    return isNaN(v) ? null : v;
+  }
+
+  // Weights (must sum to 1)
+  const WEIGHTS = {
+    rank:    0.20,
+    surface: 0.15,
+    form:    0.15,
+    bp:      0.12,
+    hold:    0.12,
+    ret:     0.10,
+    h2h:     0.08,
+    serve:   0.05,
+    ace:     0.03,
+  };
+
+  const STAT_LABELS = {
+    rank:    'ATP/WTA Ranking',
+    surface: 'Surface Win Rate',
+    form:    'Recent Form (last 10)',
+    bp:      'Break Point Conv. %',
+    hold:    'Hold %',
+    ret:     'Return Points Won %',
+    h2h:     'Head-to-Head',
+    serve:   'First Serve In %',
+    ace:     'Ace Rate',
+  };
+
+  function normalize(aVal, bVal, lowerIsBetter = false) {
+    // Returns [scoreA, scoreB] each in [0,1], summing to 1
+    if (aVal === null && bVal === null) return [0.5, 0.5];
+    if (aVal === null) return [0.35, 0.65];
+    if (bVal === null) return [0.65, 0.35];
+    if (aVal === bVal) return [0.5, 0.5];
+    const lo = Math.min(aVal, bVal);
+    const hi = Math.max(aVal, bVal);
+    const range = hi - lo;
+    let ratioA = (aVal - lo) / range; // 0=worst, 1=best among the two
+    if (lowerIsBetter) ratioA = 1 - ratioA;
+    // Scale to [0.2, 0.8] so even a big gap doesn't read as 0/100%
+    const scaled = 0.2 + ratioA * 0.6;
+    return [scaled, 1 - scaled];
+  }
+
+  function h2hNormalize(aWins, bWins) {
+    if (aWins === null && bWins === null) return [0.5, 0.5];
+    const aw = aWins ?? 0;
+    const bw = bWins ?? 0;
+    const total = aw + bw;
+    if (total === 0) return [0.5, 0.5];
+    const ra = aw / total;
+    const scaled = 0.2 + ra * 0.6;
+    return [scaled, 1 - scaled];
+  }
+
+  function predict() {
+    const aName = document.getElementById('a-name').value.trim() || 'Player A';
+    const bName = document.getElementById('b-name').value.trim() || 'Player B';
+
+    const stats = {
+      rank:    [val('a-rank'),    val('b-rank'),    true],
+      surface: [val('a-surface'), val('b-surface'), false],
+      form:    [val('a-form'),    val('b-form'),    false],
+      bp:      [val('a-bp'),      val('b-bp'),      false],
+      hold:    [val('a-hold'),    val('b-hold'),    false],
+      ret:     [val('a-return'),  val('b-return'),  false],
+      serve:   [val('a-serve'),   val('b-serve'),   false],
+      ace:     [val('a-ace'),     val('b-ace'),     false],
+    };
+
+    // Require at least ranking for both
+    if (stats.rank[0] === null && stats.rank[1] === null) {
+      document.getElementById('error-msg').style.display = 'block';
+      return;
+    }
+    document.getElementById('error-msg').style.display = 'none';
+
+    let totalA = 0, totalB = 0;
+    const rows = [];
+
+    for (const [key, [aVal, bVal, lib]] of Object.entries(stats)) {
+      const [sA, sB] = normalize(aVal, bVal, lib);
+      const w = WEIGHTS[key];
+      totalA += sA * w;
+      totalB += sB * w;
+
+      const aDisp = aVal !== null ? aVal : '—';
+      const bDisp = bVal !== null ? bVal : '—';
+      let edge = '—';
+      if (aVal !== null && bVal !== null && aVal !== bVal) {
+        const winner = sA > sB ? aName : bName;
+        edge = `▲ ${winner}`;
+      }
+      rows.push({ label: STAT_LABELS[key], aDisp, bDisp, edge, aWins: sA > sB });
+    }
+
+    // H2H
+    const [hA, hB] = h2hNormalize(val('a-h2h'), val('b-h2h'));
+    totalA += hA * WEIGHTS.h2h;
+    totalB += hB * WEIGHTS.h2h;
+    const h2hAWins = val('a-h2h'), h2hBWins = val('b-h2h');
+    const h2hEdge = (h2hAWins !== null || h2hBWins !== null)
+      ? (hA > hB ? `▲ ${aName}` : hB > hA ? `▲ ${bName}` : '—') : '—';
+    rows.push({
+      label: STAT_LABELS.h2h,
+      aDisp: h2hAWins !== null ? h2hAWins : '—',
+      bDisp: h2hBWins !== null ? h2hBWins : '—',
+      edge: h2hEdge,
+      aWins: hA > hB
+    });
+
+    // Normalise totals to sum to 1
+    const sum = totalA + totalB;
+    const pA = totalA / sum;
+    const pB = totalB / sum;
+    const pctA = Math.round(pA * 100);
+    const pctB = 100 - pctA;
+
+    const winner = pA >= pB ? aName : bName;
+    const conf = Math.max(pctA, pctB);
+    const confLabel = conf >= 70 ? 'Strong edge' : conf >= 58 ? 'Moderate edge' : 'Slight edge';
+
+    // Render
+    document.getElementById('res-winner').textContent = winner;
+    document.getElementById('res-conf').textContent = `${confLabel} — ${conf}% predicted win probability`;
+    document.getElementById('bar-a').style.width = pctA + '%';
+    document.getElementById('bar-b').style.width = pctB + '%';
+    document.getElementById('pct-a').textContent = pctA + '%';
+    document.getElementById('pct-b').textContent = pctB + '%';
+    document.getElementById('bar-name-a').textContent = aName;
+    document.getElementById('bar-name-b').textContent = bName;
+    document.getElementById('th-a').textContent = aName;
+    document.getElementById('th-b').textContent = bName;
+
+    const tbody = document.getElementById('breakdown-body');
+    tbody.innerHTML = rows.map(r => `
+      <tr>
+        <td>${r.label}</td>
+        <td class="${r.aWins ? 'win' : 'lose'}">${r.aDisp}</td>
+        <td style="color:#999;font-size:0.8rem">${r.edge}</td>
+        <td class="${!r.aWins && r.edge !== '—' ? 'win' : 'lose'}">${r.bDisp}</td>
+      </tr>
+    `).join('');
+
+    const resultEl = document.getElementById('result');
+    resultEl.style.display = 'block';
+    resultEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+</script>
+
+</body>
+</html>
