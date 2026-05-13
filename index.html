@@ -534,10 +534,12 @@
     }
     // Update H2H labels after names are loaded
     updateLabels();
-    // If any data was pre-filled, show a banner
+    // If any data was pre-filled, show a banner and clear the URL
+    // so a page reload starts fresh instead of re-filling with old data
     if ([...params.keys()].length > 0) {
       const banner = document.getElementById('prefill-banner');
       if (banner) banner.style.display = 'block';
+      history.replaceState({}, '', window.location.pathname);
     }
   }
 
