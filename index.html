@@ -550,6 +550,13 @@
       const hardRadio = document.querySelector('input[name="surface"][value="hard"]');
       if (hardRadio) hardRadio.checked = true;
       updateLabels();
+      // Hide result panel and banners so reload shows a clean slate
+      document.getElementById('result').style.display = 'none';
+      document.getElementById('prefill-banner').style.display = 'none';
+      const progEl = document.getElementById('stats-progress');
+      if (progEl) progEl.style.display = 'none';
+      const matchList = document.getElementById('match-list');
+      if (matchList) matchList.style.display = 'none';
     }
   }
 
@@ -563,12 +570,14 @@
     document.getElementById('h2h-b-label').textContent = `${b} wins vs ${a}`;
   }
 
-  // Run on page load (DOMContentLoaded) AND on back/forward navigation (pageshow).
-  // Both are needed: DOMContentLoaded doesn't fire on bfcache restores; pageshow does.
-  window.addEventListener('DOMContentLoaded', loadFromURL);
+  // Run on page load. pageshow covers both fresh loads and bfcache
+  // back/forward restores (DOMContentLoaded doesn't fire for bfcache).
+  // We use a flag so DOMContentLoaded + pageshow don't both run on the
+  // same initial load (they fire in quick succession).
+  let _loadRan = false;
+  window.addEventListener('DOMContentLoaded', function() { _loadRan = true; loadFromURL(); });
   window.addEventListener('pageshow', function(e) {
-    // e.persisted = true when the page is restored from bfcache
-    if (e.persisted) loadFromURL();
+    if (e.persisted || !_loadRan) loadFromURL();
   });
 
   function val(id) {
@@ -841,22 +850,47 @@
     );
   }
 
+  // Helper: set input only if value is a real number (not null/undefined/NaN)
+  function fill(id, val) {
+    if (val !== null && val !== undefined && val !== '') {
+      document.getElementById(id).value = val;
+    }
+  }
+
   async function selectMatch(index, playerA, playerB, surface, tournament) {
-    // Highlight selected row
+    // ── Step 1: immediately highlight row + clear form + fill names ───────────
     document.querySelectorAll('.match-item').forEach((el, i) => {
       el.classList.toggle('selected', i === index);
     });
 
+    // Clear all stat fields and fill names straight away
+    for (const id of Object.values(PARAM_MAP)) {
+      document.getElementById(id).value = '';
+    }
+    document.getElementById('a-name').value = playerA;
+    document.getElementById('b-name').value = playerB;
+
+    // Set surface radio
+    const radio = document.querySelector(`input[name="surface"][value="${surface}"]`);
+    if (radio) radio.checked = true;
+
+    updateLabels();
+
+    // Show progress panel
     const progEl = document.getElementById('stats-progress');
     progEl.style.display = 'block';
-    // Reset all steps
-    [0, 1, 2, 3].forEach(n => setStep(n, ''));
+    progEl.innerHTML = `
+      <strong>Fetching player stats…</strong>
+      <ul class="step-list" id="step-list">
+        <li id="step-0" class="active">⏳ Looking up rankings &amp; recent form</li>
+        <li id="step-1" class="active">⏳ Fetching surface win rates &amp; service stats</li>
+        <li id="step-2" class="active">⏳ Checking head-to-head record</li>
+        <li id="step-3">○  Pre-filling prediction form</li>
+      </ul>`;
 
-    setStep(0, 'active');
-    setStep(1, 'active');
-    setStep(2, 'active');
     setStatus('', '');
 
+    // ── Step 2: fetch stats from API ─────────────────────────────────────────
     try {
       const res   = await fetch('/api/stats', {
         method:  'POST',
@@ -865,70 +899,63 @@
       });
       const stats = await res.json();
 
-      if (stats.error) {
-        progEl.innerHTML = '<p style="color:#c0392b">❌ ' + escH(stats.error) + '</p>';
-        return;
-      }
-
-      [0, 1, 2].forEach(n => setStep(n, 'done'));
+      setStep(0, 'done'); setStep(1, 'done'); setStep(2, 'done');
       setStep(3, 'active');
 
-      // ── Pre-fill the form ────────────────────────────────────────────
-      const pa = stats.playerA || {};
-      const pb = stats.playerB || {};
-      const h2h = stats.h2h   || {};
+      if (!stats.error) {
+        const pa  = stats.playerA || {};
+        const pb  = stats.playerB || {};
+        const h2h = stats.h2h    || {};
 
-      // Surface radio
-      const radio = document.querySelector(`input[name="surface"][value="${surface}"]`);
-      if (radio) radio.checked = true;
+        fill('a-rank',    pa.rank);
+        fill('a-surface', pa.surface);
+        fill('a-form',    pa.form);
+        fill('a-bp',      pa.bp);
+        fill('a-hold',    pa.hold);
+        fill('a-return',  pa.ret);
+        fill('a-serve',   pa.serve);
+        fill('a-ace',     pa.ace);
 
-      // Names
-      document.getElementById('a-name').value = playerA;
-      document.getElementById('b-name').value = playerB;
+        fill('b-rank',    pb.rank);
+        fill('b-surface', pb.surface);
+        fill('b-form',    pb.form);
+        fill('b-bp',      pb.bp);
+        fill('b-hold',    pb.hold);
+        fill('b-return',  pb.ret);
+        fill('b-serve',   pb.serve);
+        fill('b-ace',     pb.ace);
 
-      // Helper: set input only if value is not null/undefined
-      function fill(id, val) {
-        if (val !== null && val !== undefined) document.getElementById(id).value = val;
+        fill('a-h2h', h2h.aWins);
+        fill('b-h2h', h2h.bWins);
       }
-
-      fill('a-rank',    pa.rank);
-      fill('a-surface', pa.surface);
-      fill('a-form',    pa.form);
-      fill('a-bp',      pa.bp);
-      fill('a-hold',    pa.hold);
-      fill('a-return',  pa.ret);
-      fill('a-serve',   pa.serve);
-      fill('a-ace',     pa.ace);
-
-      fill('b-rank',    pb.rank);
-      fill('b-surface', pb.surface);
-      fill('b-form',    pb.form);
-      fill('b-bp',      pb.bp);
-      fill('b-hold',    pb.hold);
-      fill('b-return',  pb.ret);
-      fill('b-serve',   pb.serve);
-      fill('b-ace',     pb.ace);
-
-      fill('a-h2h', h2h.aWins);
-      fill('b-h2h', h2h.bWins);
 
       updateLabels();
 
       setStep(3, 'done');
-      progEl.innerHTML = `
-        <p style="color:#2d6a2d;font-weight:500">✅ Stats loaded!</p>
-        ${stats.note ? '<p style="color:#888;font-size:0.8rem;margin-top:0.3rem">' + escH(stats.note) + '</p>' : ''}
-        <p style="margin-top:0.5rem;font-size:0.875rem;color:#555">Review the form below and click <strong>Predict Winner</strong>.</p>
-      `;
 
-      // Show pre-fill banner and scroll to form
+      const noteHtml = (stats.note && !stats.error)
+        ? '<p style="color:#888;font-size:0.8rem;margin-top:0.4rem">' + escH(stats.note) + '</p>'
+        : '';
+      const warnHtml = stats.error
+        ? '<p style="color:#b36200;font-size:0.8rem;margin-top:0.4rem">⚠️ Stats unavailable — review and hit Predict Winner.</p>'
+        : '';
+
+      progEl.innerHTML = `
+        <p style="color:#2d6a2d;font-weight:500">✅ Stats loaded — review and hit <strong>Predict Winner</strong>.</p>
+        ${noteHtml}${warnHtml}`;
+
       document.getElementById('prefill-banner').style.display = 'block';
       setTimeout(() => {
         document.querySelector('.surface-picker').scrollIntoView({ behavior: 'smooth', block: 'start' });
-      }, 400);
+      }, 300);
 
     } catch (err) {
-      progEl.innerHTML = '<p style="color:#c0392b">❌ ' + escH(err.message) + '</p>';
+      // Network / parse error — names are already filled; prompt user to proceed
+      updateLabels();
+      progEl.innerHTML = '<p style="color:#b36200">⚠️ Could not fetch stats (' + escH(err.message) + ') — fill in stats manually and hit <strong>Predict Winner</strong>.</p>';
+      setTimeout(() => {
+        document.querySelector('.surface-picker').scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }, 300);
     }
   }
 </script>
