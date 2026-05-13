@@ -58,8 +58,17 @@ module.exports = async function handler(req, res) {
     return res.status(503).json({ error: 'Could not fetch today\'s fixtures. Please try again.' });
   }
 
-  // Log first 5 raw matches to capture both singles and doubles structures
-  console.log('RAW MATCH SAMPLES:', JSON.stringify(raw.slice(0, 5), null, 2));
+  // Log one singles + one doubles raw match to identify the differentiating field
+  const singlesSample = raw.find(m => {
+    const p1 = m.player1?.fullName ?? m.player1?.name ?? '';
+    return p1 && !p1.includes('/');
+  });
+  const doublesSample = raw.find(m => {
+    const p1 = m.player1?.fullName ?? m.player1?.name ?? '';
+    return p1 && p1.includes('/');
+  });
+  console.log('SINGLES SAMPLE:', JSON.stringify(singlesSample, null, 2));
+  console.log('DOUBLES SAMPLE:', JSON.stringify(doublesSample, null, 2));
 
   // Normalise to a slim structure Claude can filter easily
   const matches = raw
