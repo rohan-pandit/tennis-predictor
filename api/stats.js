@@ -177,6 +177,12 @@ module.exports = async function handler(req, res) {
     console.log('Stats API partial failures:', failures);
   }
 
+  // ── TEMPORARY DEBUG: log raw shapes so we can map field names ─────────────
+  const rawMatchStats = ok(matchStatsAR);
+  const rawPastMatches = ok(pastMatchesAR);
+  console.log('match-stats raw (playerA):', JSON.stringify(rawMatchStats)?.slice(0, 1000));
+  console.log('past-matches raw[0] (playerA):', JSON.stringify(Array.isArray(rawPastMatches) ? rawPastMatches[0] : rawPastMatches)?.slice(0, 500));
+
   const msA = extractMatchStats(ok(matchStatsAR));
   const msB = extractMatchStats(ok(matchStatsBR));
 
