@@ -805,25 +805,35 @@
 
       setStatus('', '');
       document.getElementById('match-list-label').textContent =
-        (data.tournament || 'Matches') + (data.surface ? '  ·  ' + data.surface.charAt(0).toUpperCase() + data.surface.slice(1) : '');
+        (data.tournament || 'Matches') +
+        (data.surface ? '  ·  ' + data.surface.charAt(0).toUpperCase() + data.surface.slice(1) : '') +
+        '  ·  ' + matches.length + ' match' + (matches.length === 1 ? '' : 'es');
 
-      document.getElementById('match-items').innerHTML = matches.map((m, i) => `
+      const allTournaments = !data.surface; // top-level surface is null → "all" mode
+      document.getElementById('match-items').innerHTML = matches.map((m, i) => {
+        const matchSurface    = m.surface    || data.surface    || 'hard';
+        const matchTour       = m.tour       || data.tour       || 'atp';
+        const matchTournament = m.tournament || data.tournament || '';
+        const subLabel = allTournaments
+          ? escH(matchTournament) + (m.round ? ' · ' + escH(m.round) : '')
+          : escH(m.round || '');
+        return `
         <div class="match-item"
              data-index="${i}"
              data-player-a="${escH(m.playerA)}"
              data-player-b="${escH(m.playerB)}"
              data-player-a-id="${m.playerAId ?? ''}"
              data-player-b-id="${m.playerBId ?? ''}"
-             data-tour="${escH(data.tour || 'atp')}"
-             data-surface="${escH(data.surface || 'hard')}"
-             data-tournament="${escH(data.tournament || '')}"
+             data-tour="${escH(matchTour)}"
+             data-surface="${escH(matchSurface)}"
+             data-tournament="${escH(matchTournament)}"
              onclick="selectMatchFromEl(this)">
           <div class="match-players">
             ${escH(m.playerA)}<span class="match-vs">vs</span>${escH(m.playerB)}
           </div>
-          <div class="match-round">${escH(m.round || '')}</div>
-        </div>
-      `).join('');
+          <div class="match-round">${subLabel}</div>
+        </div>`;
+      }).join('');
 
       listEl.style.display = 'block';
 
