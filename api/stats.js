@@ -230,8 +230,6 @@ module.exports = async function handler(req, res) {
   ].map(err).filter(Boolean);
 
   if (failures.length) console.log('Stats API partial failures:', failures);
-  console.log('H2H raw:', JSON.stringify(ok(h2hR)));
-  console.log('H2H result status:', h2hR.status, h2hR.status === 'rejected' ? h2hR.reason?.message : '');
 
   const msA = extractMatchStats(ok(matchStatsAR));
   const msB = extractMatchStats(ok(matchStatsBR));
