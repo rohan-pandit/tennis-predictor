@@ -83,42 +83,34 @@ Today is ${today}.
 Here are all tennis matches scheduled today (${matches.length} total across all tournaments):
 ${JSON.stringify(matches, null, 2)}
 
-Surface reference (use this for steps 2 and 3):
+1. Identify which tournament the user is asking about. They may use an informal name:
+   - "Rome", "Rome Open", "Italian Open", "Rome Masters" → Internazionali BNL d'Italia
+   - "French Open", "Paris clay" → Roland Garros
+   - "Wimbledon", "the Championships" → Wimbledon
+   - "US Open", "Flushing Meadows" → US Open
+   - "Australian Open", "AO" → Australian Open
+   - "Madrid" → Mutua Madrid Open
+   - "Monte Carlo" → Rolex Monte-Carlo Masters
+   - "Canada", "Toronto", "Montreal" → National Bank Open
+   - "Cincinnati" → Western & Southern Open
+   - "Halle" → Terra Wortmann Open
+   - "Queen's" → cinch Championships
+   Use your tennis knowledge for any other tournament name.
+
+2. Filter the matches list to only those from that tournament.
+
+3. Infer the surface:
    - clay:  Internazionali BNL d'Italia, Roland Garros, Mutua Madrid Open, Barcelona, Monte Carlo, Hamburg, Geneva, Lyon
    - grass: Wimbledon, cinch Championships, Terra Wortmann Open, Eastbourne, 's-Hertogenbosch, Birmingham
    - hard:  Australian Open, US Open, Miami Open, BNP Paribas Open, National Bank Open, Western & Southern Open, Dubai, Doha, Adelaide, Paris, Vienna, Basel
 
-Decide which case applies:
-
-CASE A — User asks for ALL matches today (no specific tournament mentioned, e.g. "what matches are on today?", "show me all matches", "what's on today?"):
-  - Return every match in the input, unfiltered.
-  - Set top-level "tournament" to "All Tournaments Today" and "surface" to null and "tour" to null.
-  - For each match include its "tournament" (copy from input) and infer its "surface" using the surface reference above.
-
-CASE B — User asks about a specific tournament (e.g. "matches at Roland Garros", "what's on at Wimbledon?"):
-  - Identify the tournament. Informal name aliases:
-      "Rome", "Rome Open", "Italian Open", "Rome Masters" → Internazionali BNL d'Italia
-      "French Open", "Paris clay" → Roland Garros
-      "Wimbledon", "the Championships" → Wimbledon
-      "US Open", "Flushing Meadows" → US Open
-      "Australian Open", "AO" → Australian Open
-      "Madrid" → Mutua Madrid Open
-      "Monte Carlo" → Rolex Monte-Carlo Masters
-      "Canada", "Toronto", "Montreal" → National Bank Open
-      "Cincinnati" → Western & Southern Open
-      "Halle" → Terra Wortmann Open
-      "Queen's" → cinch Championships
-  - Filter to only that tournament's matches.
-  - Set top-level "surface" and "tour" from that tournament.
-  - Per-match "tournament" and "surface" fields should match the top-level values.
-
 Return ONLY valid JSON — no markdown, no explanation:
 {
-  "tournament": "tournament name or 'All Tournaments Today'",
-  "surface": "clay" | "grass" | "hard" | null,
-  "tour": "atp" | "wta" | null,
+  "tournament": "exact tournament name from the data",
+  "surface": "clay" | "grass" | "hard",
+  "tour": "atp" | "wta",
   "matches": [
-    { "playerA": "First Last", "playerB": "First Last", "round": "Round name", "tournament": "Tournament name", "surface": "clay" | "grass" | "hard", "playerAId": <copy playerAId from input>, "playerBId": <copy playerBId from input> }
+    { "playerA": "First Last", "playerB": "First Last", "round": "Round name", "playerAId": <copy playerAId from input>, "playerBId": <copy playerBId from input> }
   ]
 }
 
@@ -127,7 +119,7 @@ IMPORTANT: Copy playerAId and playerBId exactly as they appear in the input for 
   try {
     const response = await client.messages.create({
       model: 'claude-haiku-4-5',
-      max_tokens: 8192,
+      max_tokens: 2048,
       messages: [{ role: 'user', content: prompt }],
     });
 
