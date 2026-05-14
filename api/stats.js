@@ -227,6 +227,7 @@ module.exports = async function handler(req, res) {
   ].map(err).filter(Boolean);
 
   if (failures.length) console.log('Stats API partial failures:', failures);
+  console.log('H2H raw:', JSON.stringify(ok(h2hR)));
 
   const msA = extractMatchStats(ok(matchStatsAR));
   const msB = extractMatchStats(ok(matchStatsBR));
