@@ -164,12 +164,15 @@ function extractMatchStats(matchStatsData) {
 }
 
 function extractH2H(h2hData) {
-  const d = first(h2hData);
-  if (!d) return { aWins: 0, bWins: 0 };
-  return {
-    aWins: parseInt(d.player1AllWins ?? d.player1Wins ?? d.p1Wins ?? 0) || 0,
-    bWins: parseInt(d.player2AllWins ?? d.player2Wins ?? d.p2Wins ?? 0) || 0,
-  };
+  // API returns an array of per-surface records — sum across all courts
+  // e.g. [{court:"Hard", player1wins:"3", player2wins:"1"}, {court:"Clay", ...}]
+  if (!Array.isArray(h2hData) || !h2hData.length) return { aWins: 0, bWins: 0 };
+  let aWins = 0, bWins = 0;
+  for (const row of h2hData) {
+    aWins += parseInt(row.player1wins ?? row.player1Wins ?? row.p1Wins ?? 0) || 0;
+    bWins += parseInt(row.player2wins ?? row.player2Wins ?? row.p2Wins ?? 0) || 0;
+  }
+  return { aWins, bWins };
 }
 
 // ── Handler ────────────────────────────────────────────────────────────────────
@@ -227,7 +230,6 @@ module.exports = async function handler(req, res) {
   ].map(err).filter(Boolean);
 
   if (failures.length) console.log('Stats API partial failures:', failures);
-  console.log('H2H raw:', JSON.stringify(ok(h2hR)));
 
   const msA = extractMatchStats(ok(matchStatsAR));
   const msB = extractMatchStats(ok(matchStatsBR));
