@@ -1,177 +1,215 @@
-const Anthropic = require('@anthropic-ai/sdk');
+const RAPIDAPI_HOST = 'tennis-api-atp-wta-itf.p.rapidapi.com';
+const BASE_URL      = `https://${RAPIDAPI_HOST}`;
 
-// ── Helpers ────────────────────────────────────────────────────────────────────
+// ── RapidAPI helper ────────────────────────────────────────────────────────────
 
-/** Fetch a URL and return stripped plain text (max 6000 chars) */
-async function fetchPage(url) {
-  const res = await fetch(url, {
+async function apiGet(path) {
+  const res = await fetch(`${BASE_URL}${path}`, {
     headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      'Accept-Language': 'en-US,en;q=0.9',
+      'x-rapidapi-host': RAPIDAPI_HOST,
+      'x-rapidapi-key':  process.env.RAPIDAPI_KEY,
     },
-    redirect: 'follow',
     signal: AbortSignal.timeout(9000),
   });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const html = await res.text();
-  return html
-    .replace(/<script[\s\S]*?<\/script>/gi, '')
-    .replace(/<style[\s\S]*?<\/style>/gi, '')
-    .replace(/<!--[\s\S]*?-->/g, '')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 6000);
+  if (!res.ok) throw new Error(`HTTP ${res.status} for ${path}`);
+  const raw = await res.json();
+  if (Array.isArray(raw))          return raw;
+  if (raw?.data  !== undefined)    return raw.data;
+  if (raw?.result !== undefined)   return raw.result;
+  return raw;
 }
 
-/** Convert "First Last" → "FirstLast" for Tennis Abstract URLs */
-function taSlug(name) {
-  return name.replace(/\s+/g, '').replace(/[^a-zA-Z]/g, '');
+// ── Stat extractors ────────────────────────────────────────────────────────────
+
+/** Round to dp decimal places, return null if NaN */
+function n(val, dp = 1) {
+  const f = parseFloat(val);
+  return isNaN(f) ? null : Math.round(f * 10 ** dp) / 10 ** dp;
 }
 
-/** Map surface name to Tennis Abstract surface code */
-function surfaceCode(surface) {
-  if (surface === 'clay') return 'C';
-  if (surface === 'grass') return 'G';
-  return 'H';
+/** Unwrap single-element arrays */
+function first(data) {
+  return Array.isArray(data) ? data[0] ?? null : data ?? null;
+}
+
+function extractRank(profileData) {
+  const p = first(profileData);
+  if (!p) return null;
+  const r = parseInt(p.currentRank ?? p.ranking ?? p.rank ?? p.rankPoints);
+  return isNaN(r) ? null : r;
+}
+
+function extractSurfaceWinRate(surfaceData, surface) {
+  if (!Array.isArray(surfaceData) || !surfaceData.length) return null;
+
+  const targetName  = surface === 'clay' ? 'Clay' : surface === 'grass' ? 'Grass' : 'Hard';
+  const currentYear = new Date().getFullYear();
+  let wins = 0, losses = 0;
+
+  for (const entry of surfaceData) {
+    const year = parseInt(entry.year ?? entry.gameYear ?? entry.Year ?? 0);
+    // Only include current year + previous year (last ~12-24 months of surface data)
+    if (year !== currentYear && year !== currentYear - 1) continue;
+
+    const courts = entry.courts ?? entry.data ?? entry.surfaces ?? [];
+    for (const c of (Array.isArray(courts) ? courts : [])) {
+      const name = String(c.court ?? c.courtName ?? c.surface ?? '');
+      if (name.toLowerCase().includes(targetName.toLowerCase())) {
+        wins   += parseInt(c.courtWins   ?? c.wins   ?? c.W ?? 0);
+        losses += parseInt(c.courtLosses ?? c.losses ?? c.L ?? 0);
+      }
+    }
+  }
+
+  const total = wins + losses;
+  return total > 0 ? n((wins / total) * 100) : null;
+}
+
+function extractForm(pastMatchesData) {
+  if (!Array.isArray(pastMatchesData) || !pastMatchesData.length) return null;
+  const recent = pastMatchesData.slice(0, 10);
+  let wins = 0;
+  for (const m of recent) {
+    const r = m.result ?? m.outcome ?? m.winner ?? m.win;
+    if (r === 'W' || r === 1 || r === '1' || r === true) wins++;
+  }
+  return wins;
+}
+
+function extractMatchStats(matchStatsData) {
+  const d = first(matchStatsData);
+  if (!d) return { ace: null, serve: null, bp: null, hold: null, ret: null };
+
+  // Break-point conversion %
+  let bp = null;
+  const bpWon    = parseFloat(d.breakPointWonGm    ?? d.breakpointWonGm    ?? d.bpWon    ?? NaN);
+  const bpChance = parseFloat(d.breakPointChanceGm ?? d.breakpointChanceGm ?? d.bpChance ?? NaN);
+  if (!isNaN(bpWon) && !isNaN(bpChance) && bpChance > 0) {
+    bp = n((bpWon / bpChance) * 100);
+  } else {
+    bp = n(d.breakPointConversionGm ?? d.bpConversionGm ?? d.breakPointConversion);
+  }
+
+  // Hold % (service games won %)
+  const hold = n(
+    d.holdGm ?? d.serviceGamesWonGm ?? d.serviceGamesWonPct ?? d.holdPct ?? d.holdPercentGm
+  );
+
+  // Return points won %
+  const ret = n(
+    d.returnPointsWonGm ?? d.returnPointsWonPct ?? d.returnPointsWon ?? d.returnGamesWonGm
+  );
+
+  // First serve in %
+  const serve = n(
+    d.firstServeGm ?? d.firstServePct ?? d.firstServeInGm ?? d.firstServeIn
+  );
+
+  // Aces per game
+  const ace = n(d.acesGm ?? d.acesPgm ?? d.acesPerGame, 2);
+
+  return { ace, serve, bp, hold, ret };
+}
+
+function extractH2H(h2hData) {
+  const d = first(h2hData);
+  if (!d) return { aWins: 0, bWins: 0 };
+  return {
+    aWins: parseInt(d.player1AllWins ?? d.player1Wins ?? d.p1Wins ?? 0) || 0,
+    bWins: parseInt(d.player2AllWins ?? d.player2Wins ?? d.p2Wins ?? 0) || 0,
+  };
 }
 
 // ── Handler ────────────────────────────────────────────────────────────────────
 
 module.exports = async function handler(req, res) {
-  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Origin',  '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-
   if (req.method === 'OPTIONS') return res.status(200).end();
-  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+  if (req.method !== 'POST')   return res.status(405).json({ error: 'Method not allowed' });
 
-  const { playerA, playerB, surface = 'hard', tournament = '' } = req.body || {};
-  if (!playerA || !playerB) return res.status(400).json({ error: 'playerA and playerB are required' });
+  const {
+    playerA, playerB,
+    surface = 'hard', tournament = '',
+    playerAId, playerBId,
+    tour = 'atp',
+  } = req.body || {};
 
-  if (!process.env.ANTHROPIC_API_KEY) {
-    return res.status(500).json({ error: 'Server is not configured. Add ANTHROPIC_API_KEY to Vercel environment variables.' });
+  if (!playerA || !playerB) return res.status(400).json({ error: 'playerA and playerB required' });
+  if (!process.env.RAPIDAPI_KEY) return res.status(500).json({ error: 'Missing RAPIDAPI_KEY' });
+
+  if (!playerAId || !playerBId) {
+    return res.status(400).json({
+      error: 'Player IDs unavailable — stats cannot be fetched for this match.',
+    });
   }
 
-  const today = new Date();
-  const currentYear = today.getFullYear();
-  const oneYearAgo = new Date(today - 365 * 24 * 60 * 60 * 1000);
-  const dateRange = `${oneYearAgo.toISOString().split('T')[0]} to ${today.toISOString().split('T')[0]}`;
-  const sc = surfaceCode(surface);
-  const paSlug = taSlug(playerA);
-  const pbSlug = taSlug(playerB);
+  const t = tour.toLowerCase();
 
-  // ── Fetch pages in parallel ──────────────────────────────────────────────────
-  const urlMap = {
-    paYTD:   `https://www.tennisabstract.com/cgi-bin/player.cgi?p=${paSlug}&f=ACareer&t=0&surface=${sc}&year=${currentYear}`,
-    pbYTD:   `https://www.tennisabstract.com/cgi-bin/player.cgi?p=${pbSlug}&f=ACareer&t=0&surface=${sc}&year=${currentYear}`,
-    h2h:     `https://www.tennisabstract.com/cgi-bin/player-matchrecord.cgi?p=${paSlug}&p2=${pbSlug}`,
-    paForm:  `https://www.tennisabstract.com/cgi-bin/player.cgi?p=${paSlug}&f=ACareer&t=0&year=${currentYear - 1}&year2=${currentYear}`,
-    pbForm:  `https://www.tennisabstract.com/cgi-bin/player.cgi?p=${pbSlug}&f=ACareer&t=0&year=${currentYear - 1}&year2=${currentYear}`,
+  // ── Fetch all 9 endpoints in parallel ─────────────────────────────────────
+  const [
+    profileAR, profileBR,
+    matchStatsAR, matchStatsBR,
+    surfSummaryAR, surfSummaryBR,
+    pastMatchesAR, pastMatchesBR,
+    h2hR,
+  ] = await Promise.allSettled([
+    apiGet(`/tennis/v2/${t}/player/profile/${playerAId}`),
+    apiGet(`/tennis/v2/${t}/player/profile/${playerBId}`),
+    apiGet(`/tennis/v2/${t}/player/match-stats/${playerAId}`),
+    apiGet(`/tennis/v2/${t}/player/match-stats/${playerBId}`),
+    apiGet(`/tennis/v2/${t}/player/surface-summary/${playerAId}`),
+    apiGet(`/tennis/v2/${t}/player/surface-summary/${playerBId}`),
+    apiGet(`/tennis/v2/${t}/player/past-matches/${playerAId}?pageSize=10`),
+    apiGet(`/tennis/v2/${t}/player/past-matches/${playerBId}?pageSize=10`),
+    apiGet(`/tennis/v2/${t}/h2h/info/${playerAId}/${playerBId}`),
+  ]);
+
+  const ok  = r => r.status === 'fulfilled' ? r.value : null;
+  const err = r => r.status === 'rejected'  ? r.reason?.message : null;
+
+  const failures = [profileAR, profileBR, matchStatsAR, matchStatsBR,
+                    surfSummaryAR, surfSummaryBR, pastMatchesAR, pastMatchesBR, h2hR]
+    .map(err).filter(Boolean);
+
+  if (failures.length) {
+    console.log('Stats API partial failures:', failures);
+  }
+
+  const msA = extractMatchStats(ok(matchStatsAR));
+  const msB = extractMatchStats(ok(matchStatsBR));
+
+  const statsA = {
+    rank:    extractRank(ok(profileAR)),
+    surface: extractSurfaceWinRate(ok(surfSummaryAR), surface),
+    form:    extractForm(ok(pastMatchesAR)),
+    bp:      msA.bp,
+    hold:    msA.hold,
+    ret:     msA.ret,
+    serve:   msA.serve,
+    ace:     msA.ace,
+  };
+  const statsB = {
+    rank:    extractRank(ok(profileBR)),
+    surface: extractSurfaceWinRate(ok(surfSummaryBR), surface),
+    form:    extractForm(ok(pastMatchesBR)),
+    bp:      msB.bp,
+    hold:    msB.hold,
+    ret:     msB.ret,
+    serve:   msB.serve,
+    ace:     msB.ace,
   };
 
-  const fetched = {};
-  await Promise.allSettled(
-    Object.entries(urlMap).map(async ([key, url]) => {
-      try {
-        fetched[key] = `[Source: ${url}]\n${await fetchPage(url)}`;
-      } catch (err) {
-        fetched[key] = `[Could not fetch ${url}: ${err.message}]`;
-      }
-    })
-  );
+  const filled  = [...Object.values(statsA), ...Object.values(statsB)].filter(v => v !== null).length;
+  const noteStr = failures.length
+    ? `${failures.length}/9 API calls failed. ${filled}/16 stats populated.`
+    : `All stats fetched from RapidAPI live data. ${filled}/16 stats populated.`;
 
-  // ── Ask Claude to extract stats from the fetched pages ──────────────────────
-  const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-
-  const extractPrompt = `You are a tennis statistics researcher. Extract stats for this match:
-
-Match: ${playerA} vs ${playerB}
-Surface: ${surface}
-Tournament: ${tournament || 'unknown'}
-Stats date range (12-month rolling window): ${dateRange}
-
-FETCHED PAGES:
-
-=== ${playerA} — ${surface} surface stats (${currentYear} YTD) ===
-${fetched.paYTD}
-
-=== ${playerB} — ${surface} surface stats (${currentYear} YTD) ===
-${fetched.pbYTD}
-
-=== Head-to-Head (career, no date restriction) ===
-${fetched.h2h}
-
-=== ${playerA} — Last 12 months (for recent form / win rate) ===
-${fetched.paForm}
-
-=== ${playerB} — Last 12 months (for recent form / win rate) ===
-${fetched.pbForm}
-
-INSTRUCTIONS:
-- Extract each stat from the pages above. Use the ${currentYear} YTD or 12-month data.
-- "form" = wins in last 10 matches (count the 10 most recent matches in the 12-month window and tally W/L).
-- "surface" = win rate % on ${surface} courts (0–100).
-- "rank" = current ATP/WTA ranking (integer); if not on the page, leave null.
-- "bp" = break point conversion % (0–100).
-- "hold" = hold % / service games won % (0–100).
-- "ret" = return points won % (0–100).
-- "serve" = first serve in % (0–100).
-- "ace" = aces per game (decimal, e.g. 1.5).
-- H2H: count career wins for each player. Use the full career record.
-- Use null for any stat that cannot be found in the pages — do NOT guess or invent values.
-
-Return ONLY valid JSON — no markdown fences, no explanation:
-{
-  "playerA": {
-    "rank": null,
-    "surface": null,
-    "form": null,
-    "bp": null,
-    "hold": null,
-    "ret": null,
-    "serve": null,
-    "ace": null
-  },
-  "playerB": {
-    "rank": null,
-    "surface": null,
-    "form": null,
-    "bp": null,
-    "hold": null,
-    "ret": null,
-    "serve": null,
-    "ace": null
-  },
-  "h2h": {
-    "aWins": 0,
-    "bWins": 0
-  },
-  "note": "brief summary of what was found vs left null"
-}`;
-
-  try {
-    const response = await client.messages.create({
-      model: 'claude-opus-4-7',
-      max_tokens: 2048,
-      messages: [{ role: 'user', content: extractPrompt }],
-    });
-
-    const text = (response.content[0]?.text || '').trim();
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      return res.status(500).json({ error: 'Could not extract stats.', raw: text.slice(0, 400) });
-    }
-
-    const stats = JSON.parse(jsonMatch[0]);
-    return res.json(stats);
-  } catch (err) {
-    console.error('stats handler error:', err);
-    return res.status(500).json({ error: err.message || 'Internal server error' });
-  }
+  return res.json({
+    playerA: statsA,
+    playerB: statsB,
+    h2h:     extractH2H(ok(h2hR)),
+    note:    noteStr,
+  });
 };

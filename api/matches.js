@@ -46,9 +46,10 @@ module.exports = async function handler(req, res) {
     fetchFixtures('wta', today),
   ]);
 
+  // Tag each fixture with its tour so we can pass it through to stats
   const raw = [
-    ...(atpResult.status  === 'fulfilled' ? atpResult.value  : []),
-    ...(wtaResult.status  === 'fulfilled' ? wtaResult.value  : []),
+    ...(atpResult.status === 'fulfilled' ? atpResult.value.map(m => ({ ...m, _tour: 'atp' })) : []),
+    ...(wtaResult.status === 'fulfilled' ? wtaResult.value.map(m => ({ ...m, _tour: 'wta' })) : []),
   ];
 
   if (atpResult.status === 'rejected') console.log('ATP fetch failed:', atpResult.reason?.message);
@@ -63,8 +64,11 @@ module.exports = async function handler(req, res) {
     .map(m => ({
       playerA:    m.player1?.fullName ?? m.player1?.name ?? '',
       playerB:    m.player2?.fullName ?? m.player2?.name ?? '',
+      playerAId:  m.player1?.id       ?? null,
+      playerBId:  m.player2?.id       ?? null,
       tournament: m.tournament?.name  ?? '',
       round:      m.round?.name       ?? (typeof m.round === 'string' ? m.round : ''),
+      tour:       m._tour,
     }))
     .filter(m => m.playerA && m.playerB && !m.playerA.includes('/') && !m.playerB.includes('/'));
 
@@ -104,10 +108,13 @@ Return ONLY valid JSON — no markdown, no explanation:
 {
   "tournament": "exact tournament name from the data",
   "surface": "clay" | "grass" | "hard",
+  "tour": "atp" | "wta",
   "matches": [
-    { "playerA": "First Last", "playerB": "First Last", "round": "Round name" }
+    { "playerA": "First Last", "playerB": "First Last", "round": "Round name", "playerAId": <copy playerAId from input>, "playerBId": <copy playerBId from input> }
   ]
-}`;
+}
+
+IMPORTANT: Copy playerAId and playerBId exactly as they appear in the input for each match. Do not alter or omit them.`;
 
   try {
     const response = await client.messages.create({

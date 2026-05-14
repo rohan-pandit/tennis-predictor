@@ -812,6 +812,9 @@
              data-index="${i}"
              data-player-a="${escH(m.playerA)}"
              data-player-b="${escH(m.playerB)}"
+             data-player-a-id="${m.playerAId ?? ''}"
+             data-player-b-id="${m.playerBId ?? ''}"
+             data-tour="${escH(data.tour || 'atp')}"
              data-surface="${escH(data.surface || 'hard')}"
              data-tournament="${escH(data.tournament || '')}"
              onclick="selectMatchFromEl(this)">
@@ -846,7 +849,10 @@
       el.dataset.playerA,
       el.dataset.playerB,
       el.dataset.surface,
-      el.dataset.tournament
+      el.dataset.tournament,
+      el.dataset.playerAId || null,
+      el.dataset.playerBId || null,
+      el.dataset.tour      || 'atp'
     );
   }
 
@@ -857,7 +863,7 @@
     }
   }
 
-  async function selectMatch(index, playerA, playerB, surface, tournament) {
+  async function selectMatch(index, playerA, playerB, surface, tournament, playerAId, playerBId, tour) {
     // ── Step 1: immediately highlight row + clear form + fill names ───────────
     document.querySelectorAll('.match-item').forEach((el, i) => {
       el.classList.toggle('selected', i === index);
@@ -895,7 +901,7 @@
       const res   = await fetch('/api/stats', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ playerA, playerB, surface, tournament }),
+        body:    JSON.stringify({ playerA, playerB, surface, tournament, playerAId, playerBId, tour }),
       });
       const stats = await res.json();
 
