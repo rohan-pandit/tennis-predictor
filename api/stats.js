@@ -13,24 +13,41 @@ async function apiGet(path) {
   });
   if (!res.ok) throw new Error(`HTTP ${res.status} for ${path}`);
   const raw = await res.json();
-  if (Array.isArray(raw))          return raw;
-  if (raw?.data  !== undefined)    return raw.data;
-  if (raw?.result !== undefined)   return raw.result;
+  if (Array.isArray(raw))        return raw;
+  if (raw?.data  !== undefined)  return raw.data;
+  if (raw?.result !== undefined) return raw.result;
   return raw;
 }
 
-// ── Stat extractors ────────────────────────────────────────────────────────────
+// ── Helpers ────────────────────────────────────────────────────────────────────
 
-/** Round to dp decimal places, return null if NaN */
+/** Round to dp decimal places; return null if not a finite number */
 function n(val, dp = 1) {
   const f = parseFloat(val);
-  return isNaN(f) ? null : Math.round(f * 10 ** dp) / 10 ** dp;
+  return isFinite(f) ? Math.round(f * 10 ** dp) / 10 ** dp : null;
 }
 
 /** Unwrap single-element arrays */
 function first(data) {
-  return Array.isArray(data) ? data[0] ?? null : data ?? null;
+  return Array.isArray(data) ? (data[0] ?? null) : (data ?? null);
 }
+
+/**
+ * Given p = probability of winning a single service point,
+ * return the probability of holding serve (winning the game).
+ * Uses the exact tennis game formula (includes deuce).
+ */
+function holdProbFromSvcPtPct(p) {
+  const q = 1 - p;
+  return (
+    Math.pow(p, 4) +
+    4 * Math.pow(p, 4) * q +
+    10 * Math.pow(p, 4) * Math.pow(q, 2) +
+    20 * Math.pow(p, 3) * Math.pow(q, 3) * (Math.pow(p, 2) / (Math.pow(p, 2) + Math.pow(q, 2)))
+  );
+}
+
+// ── Stat extractors ────────────────────────────────────────────────────────────
 
 function extractRank(profileData) {
   const p = first(profileData);
@@ -48,7 +65,7 @@ function extractSurfaceWinRate(surfaceData, surface) {
 
   for (const entry of surfaceData) {
     const year = parseInt(entry.year ?? entry.gameYear ?? entry.Year ?? 0);
-    // Only include current year + previous year (last ~12-24 months of surface data)
+    // Current year + previous year (≈ last 12-24 months)
     if (year !== currentYear && year !== currentYear - 1) continue;
 
     const courts = entry.courts ?? entry.data ?? entry.surfaces ?? [];
@@ -65,48 +82,83 @@ function extractSurfaceWinRate(surfaceData, surface) {
   return total > 0 ? n((wins / total) * 100) : null;
 }
 
-function extractForm(pastMatchesData) {
+/**
+ * Count wins in last 10 matches.
+ * The API's `result` field is a score string ("6-2 6-3"), not W/L.
+ * Win indicator is `match_winner` (the winning player's numeric ID).
+ */
+function extractForm(pastMatchesData, playerId) {
   if (!Array.isArray(pastMatchesData) || !pastMatchesData.length) return null;
+  const pid    = parseInt(playerId);
   const recent = pastMatchesData.slice(0, 10);
   let wins = 0;
   for (const m of recent) {
-    const r = m.result ?? m.outcome ?? m.winner ?? m.win;
-    if (r === 'W' || r === 1 || r === '1' || r === true) wins++;
+    const winner = parseInt(m.match_winner ?? m.matchWinner ?? m.winnerId ?? NaN);
+    if (winner === pid) wins++;
   }
   return wins;
 }
 
+/**
+ * Extract serve/return/bp stats from the match-stats endpoint.
+ *
+ * Actual response shape (confirmed from live API):
+ * {
+ *   serviceStats:        { acesGm, doubleFaultsGm, firstServeGm, firstServeOfGm,
+ *                          winningOnFirstServeGm, winningOnSecondServeGm,
+ *                          winningOnSecondServeOfGm, ... }
+ *   rtnStats:            { same keys — opponent's serve stats vs this player }
+ *   breakPointsServeStats: { breakPointFacedGm, breakPointSavedGm }
+ *   breakPointsRtnStats:   { breakPointChanceGm, breakPointWonGm }
+ * }
+ * All values are raw career COUNTS, not percentages.
+ * We compute the ratios ourselves.
+ */
 function extractMatchStats(matchStatsData) {
   const d = first(matchStatsData);
   if (!d) return { ace: null, serve: null, bp: null, hold: null, ret: null };
 
-  // Break-point conversion %
-  let bp = null;
-  const bpWon    = parseFloat(d.breakPointWonGm    ?? d.breakpointWonGm    ?? d.bpWon    ?? NaN);
-  const bpChance = parseFloat(d.breakPointChanceGm ?? d.breakpointChanceGm ?? d.bpChance ?? NaN);
-  if (!isNaN(bpWon) && !isNaN(bpChance) && bpChance > 0) {
-    bp = n((bpWon / bpChance) * 100);
-  } else {
-    bp = n(d.breakPointConversionGm ?? d.bpConversionGm ?? d.breakPointConversion);
+  const svc   = d.serviceStats          || {};
+  const rtn   = d.rtnStats              || {};
+  const bpSvc = d.breakPointsServeStats || {};
+  const bpRtn = d.breakPointsRtnStats   || {};
+
+  // ── First serve in % ──────────────────────────────────────────────────────
+  const serve = (svc.firstServeGm && svc.firstServeOfGm)
+    ? n(svc.firstServeGm / svc.firstServeOfGm * 100)
+    : null;
+
+  // ── Ace rate (aces per service game, approx 4 pts/game) ──────────────────
+  // Note: all counts are career totals. Aces/game is stable enough career-wide.
+  const ace = (svc.acesGm && svc.firstServeOfGm)
+    ? n(svc.acesGm / (svc.firstServeOfGm / 4), 2)
+    : null;
+
+  // ── Break-point conversion % (as returner) ────────────────────────────────
+  const bp = (bpRtn.breakPointChanceGm && bpRtn.breakPointWonGm)
+    ? n(bpRtn.breakPointWonGm / bpRtn.breakPointChanceGm * 100)
+    : null;
+
+  // ── Hold % ────────────────────────────────────────────────────────────────
+  // Derive from service points won %, then apply exact tennis game formula.
+  let hold = null;
+  const svcPtsWon = (svc.winningOnFirstServeGm ?? 0) + (svc.winningOnSecondServeGm ?? 0);
+  const svcPtsTotal = svc.firstServeOfGm;
+  if (svcPtsWon && svcPtsTotal) {
+    const p = svcPtsWon / svcPtsTotal;
+    if (p > 0 && p < 1) hold = n(holdProbFromSvcPtPct(p) * 100);
   }
 
-  // Hold % (service games won %)
-  const hold = n(
-    d.holdGm ?? d.serviceGamesWonGm ?? d.serviceGamesWonPct ?? d.holdPct ?? d.holdPercentGm
-  );
-
-  // Return points won %
-  const ret = n(
-    d.returnPointsWonGm ?? d.returnPointsWonPct ?? d.returnPointsWon ?? d.returnGamesWonGm
-  );
-
-  // First serve in %
-  const serve = n(
-    d.firstServeGm ?? d.firstServePct ?? d.firstServeInGm ?? d.firstServeIn
-  );
-
-  // Aces per game
-  const ace = n(d.acesGm ?? d.acesPgm ?? d.acesPerGame, 2);
+  // ── Return points won % ───────────────────────────────────────────────────
+  // total return pts = opponent's firstServeOfGm (every service point)
+  // pts server won   = winningOnFirstServeGm + winningOnSecondServeGm
+  // return pts won   = total - server won
+  let ret = null;
+  const rtnTotal   = rtn.firstServeOfGm;
+  const serverWon  = (rtn.winningOnFirstServeGm ?? 0) + (rtn.winningOnSecondServeGm ?? 0);
+  if (rtnTotal && serverWon) {
+    ret = n((rtnTotal - serverWon) / rtnTotal * 100);
+  }
 
   return { ace, serve, bp, hold, ret };
 }
@@ -169,19 +221,12 @@ module.exports = async function handler(req, res) {
   const ok  = r => r.status === 'fulfilled' ? r.value : null;
   const err = r => r.status === 'rejected'  ? r.reason?.message : null;
 
-  const failures = [profileAR, profileBR, matchStatsAR, matchStatsBR,
-                    surfSummaryAR, surfSummaryBR, pastMatchesAR, pastMatchesBR, h2hR]
-    .map(err).filter(Boolean);
+  const failures = [
+    profileAR, profileBR, matchStatsAR, matchStatsBR,
+    surfSummaryAR, surfSummaryBR, pastMatchesAR, pastMatchesBR, h2hR,
+  ].map(err).filter(Boolean);
 
-  if (failures.length) {
-    console.log('Stats API partial failures:', failures);
-  }
-
-  // ── TEMPORARY DEBUG: log raw shapes so we can map field names ─────────────
-  const rawMatchStats = ok(matchStatsAR);
-  const rawPastMatches = ok(pastMatchesAR);
-  console.log('match-stats raw (playerA):', JSON.stringify(rawMatchStats)?.slice(0, 1000));
-  console.log('past-matches raw[0] (playerA):', JSON.stringify(Array.isArray(rawPastMatches) ? rawPastMatches[0] : rawPastMatches)?.slice(0, 500));
+  if (failures.length) console.log('Stats API partial failures:', failures);
 
   const msA = extractMatchStats(ok(matchStatsAR));
   const msB = extractMatchStats(ok(matchStatsBR));
@@ -189,7 +234,7 @@ module.exports = async function handler(req, res) {
   const statsA = {
     rank:    extractRank(ok(profileAR)),
     surface: extractSurfaceWinRate(ok(surfSummaryAR), surface),
-    form:    extractForm(ok(pastMatchesAR)),
+    form:    extractForm(ok(pastMatchesAR), playerAId),
     bp:      msA.bp,
     hold:    msA.hold,
     ret:     msA.ret,
@@ -199,7 +244,7 @@ module.exports = async function handler(req, res) {
   const statsB = {
     rank:    extractRank(ok(profileBR)),
     surface: extractSurfaceWinRate(ok(surfSummaryBR), surface),
-    form:    extractForm(ok(pastMatchesBR)),
+    form:    extractForm(ok(pastMatchesBR), playerBId),
     bp:      msB.bp,
     hold:    msB.hold,
     ret:     msB.ret,
@@ -207,15 +252,15 @@ module.exports = async function handler(req, res) {
     ace:     msB.ace,
   };
 
-  const filled  = [...Object.values(statsA), ...Object.values(statsB)].filter(v => v !== null).length;
-  const noteStr = failures.length
+  const filled = [...Object.values(statsA), ...Object.values(statsB)].filter(v => v !== null).length;
+  const note   = failures.length
     ? `${failures.length}/9 API calls failed. ${filled}/16 stats populated.`
-    : `All stats fetched from RapidAPI live data. ${filled}/16 stats populated.`;
+    : `Stats from RapidAPI live data (serve/return stats are career aggregates; surface & form are last 12 months). ${filled}/16 stats populated.`;
 
   return res.json({
     playerA: statsA,
     playerB: statsB,
     h2h:     extractH2H(ok(h2hR)),
-    note:    noteStr,
+    note,
   });
 };
